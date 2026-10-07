@@ -1,101 +1,151 @@
 # JorgeX Stack
 
-Configuración compartida para **Claude Code, Codex CLI, OpenCode v2 y Pi oficial**: once skills locales, seis subagentes e integraciones nativas. Stack no instala un segundo runtime Pi ni mantiene contratos/receipts privados de proveedores.
+Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: eleven local skills, six subagents and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
 
-## Uso
+## Quick start
 
-Requiere **Node >= 22.5** y pnpm. Browser Control requiere Node >= 22.19. Instala los runtimes que quieras por sus canales oficiales y ejecuta:
+You need **Node >= 22.5** and **pnpm**. Install the runtimes you want through their official channels first; Stack configures them, it does not install them.
+
+### Run it (recommended)
 
 ```sh
-pnpm add -g jorgex-stack
-jorgex-stack
+pnpm dlx jorgex-stack@latest
 ```
 
-También puedes abrir el menú con `pnpm dlx jorgex-stack`. No admite subcomandos ni flags (tampoco `--version` o `--yes`) ni modo headless. Sin terminal interactivo no modifica archivos ni espera entrada. La versión de distribución está en `package.json` y en el registro, no en un alias del instalador.
+This is the only command most people need. It downloads the latest published release into pnpm's temporary cache and opens the interactive menu. Nothing is installed globally and nothing is added to your `PATH`, so there is no old copy to update or remove later.
 
-El menú ofrece **Instalar/configurar, Actualizar, Doctor y Desinstalar**, con secciones Todo, Skills compartidas, Configuración por runtime y Subagentes, y **Limpiar**, que no elige sección ni runtime ([detalle](#limpiar)). Selecciona destino/unidad y **Aplicar**; navegar o volver no ejecuta instalaciones. La edición de modelo/esfuerzo tiene su propio **Guardar**, independiente de Aplicar. Cambios ya guardados permanecen al volver; borradores sin guardar se descartan al salir del editor. Un fallo deja visibles las unidades aplicadas/pendientes, sin rollback global ni reintentos automáticos.
+pnpm reuses that download for one day (`dlxCacheMaxAge`), so repeated runs start immediately and work offline. After a day, the next run checks the registry again and picks up a new release if there is one.
 
-Los runtimes ausentes no se instalan al abrir una pantalla. Actualizar configuración utiliza canales nativos (`claude update`, `codex update`, `opencode upgrade`, `pi update --all` y registro de paquetes oficiales); actualizar solo skills o agentes no actualiza herramientas. Doctor compara configuración local sin instalar, descargar, iniciar browser ni escribir memorias; no certifica carga efectiva, acceso a modelos o enforcement de permisos.
+### Install it as a permanent command (optional)
 
-## Canon compartido
+```sh
+pnpm add -g jorgex-stack@latest
+```
 
-Skills: **diagnose, grilling, lean-code, mcp-builder, orchestrator, retro, skill-creator, to-spec, visual-director, what y xreview**. Se copian completas desde `stack/skills` a `~/.agents/skills`, sin updater de repositorios externos ni pins de skills. Pi/Codex/OpenCode las descubren nativamente; Claude usa enlaces por skill desde su ruta nativa, no otra copia.
+This installs a global `jorgex-stack` command; run `jorgex-stack` to open the same menu. The copy stays at the version you installed: the menu's **Actualizar** action updates your runtimes' configuration, not Stack itself. To update Stack, run the same `pnpm add -g jorgex-stack@latest` again. To remove it, run `pnpm remove -g jorgex-stack`.
 
-Subagentes: **implementer, analyst, reviewer, security-auditor, simplifier y generalist**. El principal pertenece al runtime y carga orchestrator como skill. Sin tiers ni modelos/esfuerzos de fábrica; tampoco defaultProvider/defaultModel/defaultThinkingLevel impuestos a Pi. Implementer posee código y pruebas; simplifier siempre lector. Los modelos se guardan por agente en su archivo nativo, preservando cuerpo y permisos.
+Use a single package manager. A second global copy installed with npm or another tool can come first in your `PATH` and run an older version without any warning.
 
-Un solo perfil sirve al uso humano y programático. Las APIs nativas (SDK/CLI, Codex app-server, OpenCode v2 server, Pi RPC) permiten operaciones estructuradas según cada host, no takeover universal de una TTY abierta. Herdr no se instala/configura: una integración personal existente se conserva.
+### What opens
 
-Workflow canónico: [orchestrator](stack/skills/orchestrator/SKILL.md). No se duplica aquí. Visual Director, retro y what respetan sus límites de invocación manual. [Visual Director activo](stack/skills/visual-director/README.md) es portable; su [dossier histórico](docs/research/visual-director/README.md) no es dependencia de runtime ni se incluye en el paquete npm.
+Both commands open the same menu, in Spanish. It takes no subcommands or flags (not even `--version` or `--yes`) and has no headless mode. Without an interactive terminal it changes no files and does not wait for input. The distribution version lives in `package.json` and in the registry, not in an installer alias.
 
-## Configuración e integraciones
-
-| Runtime | Recursos Stack e integración |
+| Menu entry | What it does |
 | --- | --- |
-| Claude Code | Subagentes nativos, enlaces de skills, `~/.agents/AGENTS.md` con puente mínimo en `~/.claude/CLAUDE.md` y permisos fresh; plugin/MCP oficial Engram. Sin browser adicional. |
-| Codex | Agentes TOML, skills compartidas, instrucciones globales y permisos fresh; plugin/hooks/MCP oficiales Engram. Sin browser desktop añadido. |
-| OpenCode v2 | Agentes/permisos nativos, server `opencode.json(c)`, cliente `cli.json`, panel local `./tui/subagents`; setup oficial Engram completo y Browser Control. V1 no soportado. |
-| Pi oficial | Agentes con contexto de proyecto y global, instrucciones, cabecera local, configuración MCP y política de permisos fresh; extensiones nativas instaladas por Pi, incluido Engram y compact-tools. Sin tema impuesto ni instalador jorgex-pi. |
+| **Instalar / configurar** | Applies Stack's skills, subagents and configuration to the runtimes you select. |
+| **Actualizar** | Updates runtime configuration through native channels and re-applies Stack's resources. |
+| **Doctor** | Read-only check of the local configuration. |
+| **Desinstalar** | Removes the managed resources you select, with confirmation and backup. |
+| **Limpiar** | Removes leftovers from earlier versions and old backups ([details](#limpiar-cleanup)). |
 
-Las rutas efectivas respetan configuración nativa/variables del runtime. Context7 usa placeholder vacío para que cada usuario conecte su cuenta; nunca se distribuyen credenciales. [Estilo de escritura](docs/references/writing-style.md) se proyecta en todos los runtimes, sin overlay programático.
+The first four entries offer the sections Todo (everything), Skills compartidas (shared skills), Configuración por runtime (per-runtime configuration) and Subagentes (subagents). Limpiar chooses neither section nor runtime.
 
-### Engram oficial
+Pick a target and a unit, then **Aplicar**. Navigating or going back never runs an installation. Editing a subagent's model or effort has its own **Guardar**, independent of Aplicar: saved changes remain when you go back, and unsaved drafts are discarded when you leave the editor. A failure leaves the applied and pending units visible; there is no global rollback and no automatic retry.
 
-Aplicar instalación/actualización de configuración resuelve el **último release estable oficial**. Verifica metadata viva del asset publicado, nombre/plataforma, tamaño y SHA-256 antes de activar el binario. Sin red o metadata válida falla cerrado, sin fallback estático. Si ya está vigente no lo redescarga. Un binario anterior solo se sustituye tras consentimiento explícito y backup del binario, sin exportar memorias (`engram export` sigue disponible de forma nativa); se instala en `~/.local/bin/engram` o equivalente, sin Brew/Go y sin tocar `~/.engram`.
+Missing runtimes are not installed when you open a screen. Updating configuration uses native channels (`claude update`, `codex update`, `opencode upgrade`, `pi update --all` and the official package registry); updating only skills or subagents does not update tools. Doctor compares local configuration without installing, downloading, starting a browser or writing memories. It does not certify that a runtime actually loads the resources, has access to a model, or enforces permissions.
 
-Los pasos nativos (actualizadores del runtime, registro de paquetes, setup de Engram) son síncronos y pueden tardar: cada uno se anuncia con una línea «Paso nativo en curso» que muestra solo el binario, su subcomando y, cuando lo hay, el paquete o plugin por el que va; nunca rutas, flags ni la salida del subproceso. En Claude Code, el setup de Engram se ejecuta con `--protocol=slim` para no repetir en el hook de inicio el protocolo que ya entregan las instrucciones del MCP; si Engram ya registra un modo para Claude Code (`engram setup claude-code --protocol=full|slim`), Stack lo respeta.
+## Shared canon
 
-Claude/Codex/OpenCode usan el setup oficial completo; Pi usa `gentle-engram` como tools/hooks nativos, no Engram MCP adicional. Stack no parchea el plugin, TypeBox ni `<private>`. En OpenCode retira por configuración el monitor extra `opencode-subagent-statusline` y utiliza su panel v2; plugin/hooks/MCP Engram quedan intactos. La limitación upstream de captura con `<private>` anidado no se considera corregida: [reporte original](https://github.com/Gentleman-Programming/engram/issues/1558#issuecomment-5896556683). Tests de composición no prueban todo el Memory Protocol ni una instalación personal Windows.
+**Skills:** diagnose, grilling, lean-code, mcp-builder, orchestrator, retro, skill-creator, to-spec, visual-director, what and xreview. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
 
-### Browser y modelos
+**Subagents:** implementer, analyst, reviewer, security-auditor, simplifier and generalist. The primary agent belongs to the runtime and loads orchestrator as a skill. There are no tiers and no factory models or efforts, and Stack does not impose `defaultProvider`, `defaultModel` or `defaultThinkingLevel` on Pi. Implementer owns code and tests; simplifier is always read-only. Models are saved per agent in its native file, preserving body and permissions.
 
-**Browser Control** solo en OpenCode/Pi, vía CLI/MCP oficiales y extensión Chromium del proveedor. Necesita adopción explícita de pestaña; no fallback a Playwright o DevTools. Stack no supervisa el relay ni adjunta perfiles. [Límites y seguridad](docs/references/browser-automation.md).
+A single profile serves both human and programmatic use. Native APIs (SDK/CLI, Codex app-server, OpenCode v2 server, Pi RPC) allow structured operations according to each host, not a universal takeover of an open TTY. Herdr is neither installed nor configured: an existing personal integration is kept.
 
-Catálogos nativos: Claude SDK oficial, Codex app-server, OpenCode v2 `/api/model`, Pi RPC. Si faltan autenticación/catálogo, se muestra aviso y permite herencia o ID manual. Solo esfuerzos acreditados para el modelo; sin catálogo curado ni promesa de entitlement. [Modelos](docs/references/models.md).
+The canonical workflow is [orchestrator](stack/skills/orchestrator/SKILL.md) and is not duplicated here. Visual Director, retro and what keep their manual-invocation limits. The [active Visual Director](stack/skills/visual-director/README.md) is portable; its [historical dossier](docs/research/visual-director/README.md) is not a runtime dependency and is not included in the npm package.
 
-## Preservación y retirada
+## Configuration and integrations
 
-Antes de cambiar configuración existente hay backup en `~/.jorgex-stack/backups`. Los respaldos no se podan automáticamente y pueden ocupar espacio creciente: se conservan hasta que eliges Limpiar › Backups antiguos en el menú, que tras confirmar deja los 3 snapshots más recientes de cada etiqueta, o hasta que los borras a mano. Antes de eliminar snapshots, comprueba qué originales contienen y cuáles necesitas conservar para recuperar cambios; no los borres durante una operación activa. El manifest original se respalda una vez por operación, mientras el ownership se persiste por unidad para conservar evidencia de fallos parciales. Marcadores Markdown y upserts JSON/TOML preservan contenido ajeno; archivos propios se registran en un manifest mínimo local. Configuración existente de permisos no se reimpone; drift se informa sin volcar contenido. Un archivo ilegible, manifest inválido, ruta enlazada o conflicto de ownership bloquea la unidad afectada, no se interpreta como estado vacío. El backup previo al setup de Engram (`engram-setup`) copia solo los archivos que ese setup reescribe: `settings.json` y `.claude.json` en Claude Code; `config.toml`, `engram-instructions.md` y `engram-compact-prompt.md` en Codex; `opencode.json[c]`, `tui.json[c]` y `plugins/engram.ts` en OpenCode. Las versiones hasta 2.0.9 copiaban todos los archivos del nivel superior del directorio del runtime, incluidos credenciales (`auth.json` de Codex), historial y logs: revisa y elimina a mano los snapshots `*-engram-setup` antiguos que no necesites.
+| Runtime | Stack resources and integration |
+| --- | --- |
+| Claude Code | Native subagents, skill links, `~/.agents/AGENTS.md` with a minimal bridge in `~/.claude/CLAUDE.md`, and fresh permissions; official Engram plugin/MCP. No additional browser. |
+| Codex | TOML agents, shared skills, global instructions and fresh permissions; official Engram plugin/hooks/MCP. No desktop browser added. |
+| OpenCode v2 | Native agents/permissions, server `opencode.json(c)`, client `cli.json`, local panel `./tui/subagents`; full official Engram setup and Browser Control. V1 is not supported. |
+| Official Pi | Agents with project and global context, instructions, local header, MCP configuration and a fresh permission policy; native extensions installed by Pi, including Engram and compact-tools. No imposed theme and no jorgex-pi installer. |
 
-Desinstalar retira solo recursos gestionados seleccionados, con confirmación y backup; las skills tienen alcance **global compartido**, anunciado antes de aplicar. Conserva runtimes, herramientas compartidas, Engram por defecto, DB/memorias, credenciales, sesiones, browser/perfiles y datos ajenos. Un archivo propio puede retirarse con backup aunque haya sido modificado; una entrada de configuración modificada se conserva/libera. El manifest no autentica propiedad frente a manipulación: revisa/restaura su backup antes de mutar si sospechas inconsistencias.
+Effective paths respect each runtime's native configuration and environment variables. Context7 uses an empty placeholder so every user connects their own account; credentials are never distributed. The [writing style](docs/references/writing-style.md) is projected into all runtimes, with no programmatic overlay.
 
-Un archivo que ya existe en una ruta que Stack proyecta (subagentes, archivos de skills gestionadas, cabecera de Pi, recursos del cliente OpenCode) y que el manifest no registra se trata como ajeno, aunque lo instalara una versión anterior de Stack: se conserva sin tocar y tanto Aplicar como Doctor avisan de si es «idéntico al canon» o «distinto del canon». Para recuperar su gestión, aplica la unidad afectada desde Instalar / configurar o Actualizar: Stack pregunta archivo por archivo, con No por defecto. Al aceptar, un archivo distinto se respalda en un snapshot `adopt-<runtime>`, se sustituye por el canon y queda registrado como propio —un subagente adoptado conserva el modelo/esfuerzo que tuviera, igual que uno propio—; uno idéntico solo se registra, sin escritura ni backup. Desde entonces Stack lo actualiza y lo retira como cualquier recurso propio. Si respondes No, sigue siendo tuyo y el aviso se repite; Doctor no falla por ello. Enlaces simbólicos, directorios y skills completas ajenas nunca se ofrecen para adopción.
+### Official Engram
 
-No hay migrador universal para instalaciones históricas. La retirada explícita del paquete jorgex-pi y de scripts/plugins registrados propios no migra sesiones ni historia. Los backups pueden recuperarse manualmente en sus rutas originales después de revisar el contenido; no hay comando público Restore.
+Applying an installation or a configuration update resolves the **latest official stable release**. Stack verifies the live metadata of the published asset, its name and platform, size and SHA-256 before activating the binary. Without network or valid metadata it fails closed, with no static fallback. If the current binary is already up to date it is not downloaded again. An older binary is replaced only after explicit consent and a backup of the binary, without exporting memories (`engram export` remains available natively). It is installed in `~/.local/bin/engram` or the platform equivalent, without Brew or Go and without touching `~/.engram`.
 
-### Residuos de versiones anteriores
+Native steps (runtime updaters, package registry, Engram setup) are synchronous and can take a while. Each one is announced with a "Paso nativo en curso" line that shows only the binary, its subcommand and, when there is one, the package or plugin being processed; never paths, flags or subprocess output. In Claude Code, Engram's setup runs with `--protocol=slim` so the start hook does not repeat the protocol that the MCP instructions already deliver. If Engram already records a mode for Claude Code (`engram setup claude-code --protocol=full|slim`), Stack respects it.
 
-Versiones anteriores de Stack dejaron archivos y directorios que la versión actual ya no lee. Doctor los lista una vez por ejecución, con ruta, tamaño, clase y paso para retirarlos, y resume `~/.jorgex-stack/backups` con el número de snapshots y el tamaño total. Es solo lectura: no borra nada y su resultado no cambia por residuos ni por backups. La detección es únicamente por existencia de la ruta; `updatedAt` de cada runtime en el manifest se renueva solo cuando su fila cambia.
+Claude, Codex and OpenCode use the full official setup; Pi uses `gentle-engram` as native tools and hooks, not an additional Engram MCP. Stack does not patch the plugin, TypeBox or `<private>`. In OpenCode it removes, through configuration, the extra monitor `opencode-subagent-statusline` and uses its v2 panel; Engram's plugin, hooks and MCP stay intact. The upstream capture limitation with nested `<private>` is not considered fixed: [original report](https://github.com/Gentleman-Programming/engram/issues/1558#issuecomment-5896556683). Composition tests do not exercise the whole Memory Protocol or a personal Windows installation.
 
-**Privados**: están en directorios que solo Stack creó. Se retiran con Limpiar › Residuos de versiones anteriores.
+### Browser and models
 
-| Base | Rutas |
+**Browser Control** is available only in OpenCode and Pi, through the provider's official CLI/MCP and Chromium extension, and requires Node >= 22.19. It needs explicit tab adoption and has no fallback to Playwright or DevTools. Stack does not supervise the relay or attach profiles. See [limits and security](docs/references/browser-automation.md).
+
+Model catalogs are native: official Claude SDK, Codex app-server, OpenCode v2 `/api/model`, Pi RPC. If authentication or the catalog is missing, Stack shows a notice and allows inheritance or a manual ID. Only efforts accredited for the model are offered; there is no curated catalog and no promise of entitlement. See [models](docs/references/models.md).
+
+## Preservation and removal
+
+### Backups
+
+Before changing existing configuration, Stack writes a backup to `~/.jorgex-stack/backups`. Backups are not pruned automatically and can take growing space: they are kept until you choose Limpiar › Backups antiguos in the menu, which after confirmation keeps the 3 most recent snapshots of each label, or until you delete them by hand. Before deleting snapshots, check which originals they contain and which you need to recover changes; do not delete them during an active operation.
+
+The original manifest is backed up once per operation, while ownership is persisted per unit to keep evidence of partial failures. Markdown markers and JSON/TOML upserts preserve content that is not Stack's; Stack's own files are recorded in a minimal local manifest. Existing permission configuration is not re-imposed; drift is reported without dumping content. An unreadable file, an invalid manifest, a linked path or an ownership conflict blocks the affected unit; it is never read as empty state.
+
+The backup taken before Engram's setup (`engram-setup`) copies only the files that setup rewrites:
+
+- Claude Code: `settings.json` and `.claude.json`.
+- Codex: `config.toml`, `engram-instructions.md` and `engram-compact-prompt.md`.
+- OpenCode: `opencode.json[c]`, `tui.json[c]` and `plugins/engram.ts`.
+
+Versions up to 2.0.9 copied every top-level file of the runtime directory, including credentials (Codex's `auth.json`), history and logs. Review and delete by hand any old `*-engram-setup` snapshots you do not need.
+
+### Uninstalling
+
+Desinstalar removes only the selected managed resources, with confirmation and backup. Skills have a **shared global** scope, announced before applying. It keeps runtimes, shared tools, Engram by default, its database and memories, credentials, sessions, browser and profiles, and anything that is not Stack's. A file owned by Stack can be removed with a backup even if it was modified; a modified configuration entry is kept and released. The manifest does not authenticate ownership against tampering: if you suspect inconsistencies, review or restore its backup before any mutation.
+
+### Files Stack did not record
+
+A file that already exists at a path Stack projects (subagents, files of managed skills, the Pi header, OpenCode client resources) and that the manifest does not record is treated as someone else's, even if an earlier Stack version installed it. It is kept untouched, and both Aplicar and Doctor report whether it is "idéntico al canon" (identical to the canon) or "distinto del canon" (different from it).
+
+To bring it back under management, apply the affected unit from Instalar / configurar or Actualizar. Stack asks file by file, defaulting to No. If you accept:
+
+- A different file is backed up to an `adopt-<runtime>` snapshot, replaced by the canon and recorded as Stack's. An adopted subagent keeps the model and effort it had, like one Stack created.
+- An identical file is only recorded, with no write and no backup.
+
+From then on Stack updates and removes it like any of its own resources. If you answer No, the file stays yours and the notice repeats; Doctor does not fail because of it. Symbolic links, directories and whole foreign skills are never offered for adoption.
+
+There is no universal migrator for historical installations. The explicit removal of the jorgex-pi package and of Stack's own registered scripts and plugins does not migrate sessions or history. Backups can be recovered manually to their original paths after reviewing their content; there is no public Restore command.
+
+### Leftovers from earlier versions
+
+Earlier Stack versions left files and directories that the current version no longer reads. Doctor lists them once per run, with path, size, class and the step to remove them, and summarizes `~/.jorgex-stack/backups` with the number of snapshots and the total size. It is read-only: it deletes nothing, and its result does not change because of leftovers or backups. Detection is only by the existence of the path; each runtime's `updatedAt` in the manifest is renewed only when its row changes.
+
+**Private**: they live in directories only Stack created. They are removed with Limpiar › Residuos de versiones anteriores.
+
+| Base | Paths |
 | --- | --- |
 | `~/.jorgex-stack/` | `install-mode.json`, `model-map.json`, `primary-model.json`, `pi-receipt.json`, `pi-projection-receipt.json`, `playwright-cli.json`, `devtools-mcp.json`, `packages/`, `.browser-managed/` |
-| Configuración de Pi | directorios `stage-*`, `jorgex-pi/`, `npm/jorgex-pi-managed/` |
+| Pi configuration | `stage-*` directories, `jorgex-pi/`, `npm/jorgex-pi-managed/` |
 
-**En configuración del usuario**: Stack los lista y nunca los retira, porque sin manifest no puede probar que sigan siendo suyos. Comprueba que no los has personalizado antes de borrarlos a mano.
+**In user configuration**: Stack lists them and never removes them, because without a manifest it cannot prove they are still its own. Check that you have not customized them before deleting them by hand.
 
-| Base | Rutas |
+| Base | Paths |
 | --- | --- |
-| Configuración de OpenCode | `plugins/stack-hooks.ts`, `commands/xreview.md` |
-| Configuración de Pi | `prompts/lean-audit.md`, `extensions/jorgex-compact-tools/` |
+| OpenCode configuration | `plugins/stack-hooks.ts`, `commands/xreview.md` |
+| Pi configuration | `prompts/lean-audit.md`, `extensions/jorgex-compact-tools/` |
 
-### Limpiar
+### Limpiar (cleanup)
 
-La acción Limpiar del menú tiene dos unidades. No elige sección ni runtime, no se ejecuta sola y no borra nada sin una confirmación explícita, que por defecto es No e indica cuántos elementos se van a borrar y su tamaño total. Si no hay nada que hacer, lo dice y no pregunta.
+The Limpiar menu action has two units. It chooses neither section nor runtime, never runs on its own and deletes nothing without an explicit confirmation, which defaults to No and states how many items will be deleted and their total size. If there is nothing to do, it says so and does not ask.
 
-- **Residuos de versiones anteriores**: retira solo los residuos privados de la tabla anterior. Los archivos se respaldan antes en `~/.jorgex-stack/backups` con la etiqueta `cleanup`; los directorios se borran sin backup, y la confirmación lo indica. Un residuo que es un enlace simbólico no se sigue ni se retira, y una ruta que queda fuera de `~/.jorgex-stack` o de la configuración de Pi se omite; ambos casos se informan. Los residuos de Pi no se retiran mientras su `settings.json` siga registrando `jorgex-pi` o no sea legible: hasta que se aplique la configuración de Pi son código en uso. Los residuos en configuración del usuario se muestran con su paso manual y no se tocan.
-- **Backups antiguos**: conserva los 3 snapshots más recientes de cada etiqueta y todos los que tienen el manifest corrupto, y borra el resto. Solo borra directorios de snapshot dentro de `~/.jorgex-stack/backups`. Lo borrado no se puede recuperar.
+- **Residuos de versiones anteriores** (leftovers from earlier versions): removes only the private leftovers in the table above. Files are first backed up to `~/.jorgex-stack/backups` under the `cleanup` label; directories are deleted without a backup, and the confirmation says so. A leftover that is a symbolic link is neither followed nor removed, and a path outside `~/.jorgex-stack` or the Pi configuration is skipped; both cases are reported. Pi leftovers are not removed while its `settings.json` still registers `jorgex-pi` or cannot be read: until the Pi configuration is applied they are code in use. Leftovers in user configuration are shown with their manual step and left untouched.
+- **Backups antiguos** (old backups): keeps the 3 most recent snapshots of each label and every snapshot whose manifest is corrupt, and deletes the rest. It only deletes snapshot directories inside `~/.jorgex-stack/backups`. Deleted backups cannot be recovered.
 
-Limpiar no toca Engram, sesiones, credenciales ni el manifest de Stack.
+Limpiar does not touch Engram, sessions, credentials or Stack's manifest.
 
-**Valores dentro de archivos**: Doctor no los detecta, porque no inspecciona contenido. Se revisan y retiran a mano:
+**Values inside files**: Doctor does not detect them, because it does not inspect content. Review and remove them by hand:
 
-- Servidor MCP `chrome-devtools` en la configuración de OpenCode y de Codex.
-- `theme: "JorgeX"` en la configuración de Pi.
-- Dependencia `pi-mcp-adapter` en `npm/package.json` de Pi.
+- The `chrome-devtools` MCP server in the OpenCode and Codex configuration.
+- `theme: "JorgeX"` in the Pi configuration.
+- The `pi-mcp-adapter` dependency in Pi's `npm/package.json`.
 
-## Desarrollo y CI
+## Development and CI
 
 ```sh
 pnpm install --frozen-lockfile
@@ -106,30 +156,34 @@ pnpm test
 pnpm cli
 ```
 
-Toolchain de desarrollo en `package.json`; Node 24 en Actions y pnpm 11.1.1. Sin lint/qa:quality. [Testing](docs/references/testing.md). El paquete distribuye un solo bin (`dist/cli.js`) y `stack/`, con licencias/notices; no export quality-verifier, receipts/capabilities privados ni dossier de investigación. `Quality gate` ejecuta typecheck/tests/build reales de PR; publicación también valida el candidato.
+The development toolchain is declared in `package.json`; Actions use Node 24 and pnpm 11.1.1. There is no lint or `qa:quality`. See [testing](docs/references/testing.md). The package ships a single bin (`dist/cli.js`) and `stack/`, with licenses and notices; it does not export a quality verifier, private receipts or capabilities, or the research dossier. `Quality gate` runs the real typecheck, tests and build for each PR; publishing validates the candidate again.
 
-### Publicación
+### Publishing
 
-La versión se prepara en el PR; major/minor requieren decisión explícita de Jorge. [publish.yml](.github/workflows/publish.yml) publica automáticamente una versión nueva al merge en `main`. Una versión ya publicada y con tag válido no genera otra release, aunque cambien código o documentación: no hay auto-patch ni commits de versión posteriores al merge.
+The version is prepared in the PR; major and minor bumps require an explicit decision from Jorge. [publish.yml](.github/workflows/publish.yml) publishes a new version automatically on merge to `main`. A version that is already published and has a valid tag does not produce another release, even if code or documentation changed: there is no auto-patch and there are no version commits after the merge.
 
-Validación con `contents:read`: SHA inmutable de main, typecheck/tests/build y un solo `pnpm pack`. Ese tarball, su identidad de paquete/versión y su SRI SHA-512 pasan a publicación por artifact. El job OIDC (`id-token:write`, sin escritura de repositorio) publica esos bytes con `npm publish --ignore-scripts --provenance` y confirma `dist.integrity` en npm. Solo entonces un job sin checkout ni ejecución de producto usa `contents:write` para crear el tag inmutable `v<versión>` del mismo SHA. No hay App de bump ni GitHub release adicional. La concurrencia no cancela publicaciones activas; tampoco cancelarlas manualmente.
+Validation runs with `contents:read`: immutable SHA of main, typecheck/tests/build and a single `pnpm pack`. That tarball, its package and version identity and its SHA-512 SRI are handed to publishing as an artifact. The OIDC job (`id-token:write`, no repository write access) publishes those bytes with `npm publish --ignore-scripts --provenance` and confirms `dist.integrity` on npm. Only then does a job with no checkout and no product execution use `contents:write` to create the immutable tag `v<version>` on the same SHA. There is no bump App and no additional GitHub release. Concurrency does not cancel active publications; do not cancel them manually either.
 
-**Recuperación:** `workflow_dispatch` sobre main exige `release_sha` completa (40 hex), ancestro de main. Una versión existente solo puede recuperarse si el tarball reconstruido coincide con su SRI; nunca se republica ni se mueve un tag. Un push ordinario con versión publicada pero sin tag exige esa recuperación explícita. Los reruns del job de publicación vuelven a consultar npm y omiten publish si los bytes ya coinciden; un rerun de tag conserva el SHA confirmado. Una versión nueva histórica o un candidato obsoleto se bloquea para no retroceder `latest`. Revisiones históricas sin este script/contrato no tienen compatibilidad garantizada.
+**Recovery:** `workflow_dispatch` on main requires a full `release_sha` (40 hex characters) that is an ancestor of main. An existing version can be recovered only if the rebuilt tarball matches its SRI; a version is never republished and a tag is never moved. An ordinary push with a published version but no tag requires that explicit recovery. Reruns of the publish job query npm again and skip publishing if the bytes already match; a tag rerun keeps the confirmed SHA. A new historical version or an obsolete candidate is blocked so `latest` never moves backwards. Historical revisions without this script and contract have no guaranteed compatibility.
 
-Solo 404 significa versión ausente: auth/red/metadata inválida fallan cerrado. Un rerun con versión aún ausente falla cerrado: esperar metadata y aclarar el resultado anterior antes de iniciar otra publicación. Tras publicar, el readback sondea npm cada 15 s hasta acumular 5 minutos de espera y solo espera mientras el registro responda 404 por propagación; cualquier otro resultado (auth/HTTP no-ok, red, metadata inválida, integridad distinta) falla en ese intento, sin reintentar. Si el tope se agota la versión queda sin tag: no autoriza republish; cuando npm la liste, `gh run rerun <id> --failed` omite publish, verifica el SRI y crea el tag mientras el artifact del run siga retenido (7 días); después, la recuperación con `release_sha`. Si GitHub rechaza realmente el tag (por ejemplo 403), npm queda publicado y el fallo es parcial recuperable con la SHA exacta, sin elevar tokens automáticamente. No hay veto preventivo por mezclar workflows y producto ni garantía de permisos para cualquier ref histórica.
+Only a 404 means the version is absent: authentication, network or invalid-metadata errors fail closed. A rerun with the version still absent fails closed: wait for the metadata and clarify the previous result before starting another publication. After publishing, the readback polls npm every 15 s until it has waited 5 minutes in total, and only waits while the registry answers 404 because of propagation; any other result (authentication or non-OK HTTP, network, invalid metadata, different integrity) fails that attempt without retrying. If the limit runs out, the version is left without a tag. That does not authorize republishing: once npm lists it, `gh run rerun <id> --failed` skips publishing, verifies the SRI and creates the tag while the run's artifact is still retained (7 days); after that, use recovery with `release_sha`. If GitHub actually rejects the tag (for example with a 403), npm stays published and the failure is partial and recoverable with the exact SHA, without elevating tokens automatically. There is no preventive veto for mixing workflows and product, and no guarantee of permissions for any historical ref.
 
-Trusted Publisher, antiguos recursos App/secrets, entornos y rulesets siguen bajo administración del titular: retirar su uso en código no los cambia ni acredita permisos externos. No usar publicación como probe ni modificar paquetes históricos o datos del usuario.
+Trusted Publisher, former App resources and secrets, environments and rulesets remain under the owner's administration: removing their use from the code neither changes them nor proves external permissions. Do not use publishing as a probe, and do not modify historical packages or user data.
 
-## Referencias
+## References
 
-- [Pi oficial y extensiones](docs/references/pi-runtime.md)
+Reference documents are written in Spanish.
+
+- [Official Pi and extensions](docs/references/pi-runtime.md)
 - [Browser Control](docs/references/browser-automation.md)
-- [Modelos](docs/references/models.md)
-- [Permisos](docs/references/permissions.md)
-- [Límites Claude](docs/references/claude-code-limits.md)
-- [Estilo](docs/references/writing-style.md)
+- [Models](docs/references/models.md)
+- [Permissions](docs/references/permissions.md)
+- [Claude limits](docs/references/claude-code-limits.md)
+- [Writing style](docs/references/writing-style.md)
 - [Testing](docs/references/testing.md)
-- [Entrada al workflow](docs/references/sdd-workflow.md)
-- [Investigación histórica](docs/research/README.md)
+- [Workflow entry point](docs/references/sdd-workflow.md)
+- [Historical research](docs/research/README.md)
 
-MIT para Stack; preservar licencias/atribución incluidas de skills y terceros. El dossier conserva investigación histórica propia; el material externo que analiza no forma parte del repositorio.
+## License
+
+MIT for Stack. Preserve the licenses and attribution included with skills and third-party material. The dossier keeps the project's own historical research; the external material it analyzes is not part of the repository.

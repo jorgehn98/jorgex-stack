@@ -47,7 +47,7 @@ La alternativa es quitar esa línea `deny` del perfil en `config.toml`, tras un 
 - Una configuración existente no se reescribe: en Claude y Pi se conserva byte a byte. Si difiere del default se avisa sin volcar contenido; Stack no ofrece reemplazo: edítala a mano después de un backup.
 - Pi: la política se crea solo si el archivo no existe. Una instalación que no la tenga pasa del default del proveedor (preguntar) a `yoloMode` la próxima vez que se aplique la configuración.
 - Desinstalar no retira los permisos sembrados en ningún runtime: el modo sin prompts de Claude, el perfil de Codex y la política de Pi permanecen hasta que se editen a mano.
-- Configuración inválida, ilegible o en conflicto bloquea la unidad. [Retirada](../../README.md#preservación-y-retirada).
+- Configuración inválida, ilegible o en conflicto bloquea la unidad. [Retirada](../../README.md#preservation-and-removal).
 
 ## Roles
 
