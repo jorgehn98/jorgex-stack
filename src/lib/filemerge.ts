@@ -285,13 +285,17 @@ export function stripLeadingHtmlComments(md: string): string {
  * Upsert sobre un archivo JSON: parsea (u objeto vacío), aplica la mutación
  * solo sobre las claves gestionadas y re-serializa con indentación 2.
  * Limitación documentada: JSON puro (los comentarios JSONC se perderían).
+ * Si la mutación no cambia ningún valor se devuelve el texto original: el
+ * dueño del archivo (p. ej. el CLI de Claude con ~/.claude.json) lo reescribe
+ * con su propio formato, y normalizarlo sería un cambio pendiente perpetuo.
  */
 export function upsertJson(existing: string | null, mutate: (root: Record<string, unknown>) => void): string {
   let root: Record<string, unknown> = {};
-  if (existing !== null && existing.trim() !== "") {
-    root = JSON.parse(existing) as Record<string, unknown>;
-  }
+  const parsed = existing !== null && existing.trim() !== "";
+  if (parsed) root = JSON.parse(existing!) as Record<string, unknown>;
+  const before = JSON.stringify(root);
   mutate(root);
+  if (parsed && JSON.stringify(root) === before) return existing!;
   return JSON.stringify(root, null, 2) + "\n";
 }
 

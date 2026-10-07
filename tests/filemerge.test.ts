@@ -453,3 +453,11 @@ describe("editJsoncArray: la remoción preserva los comentarios ajenos", () => {
     }
   });
 });
+
+it("upsertJson returns the original text when the mutation changes no value, whatever its formatting", () => {
+  const owned = '{"mcpServers":{"engram":{"command":"engram"}},\n   "other": [1,2]}';
+  expect(upsertJson(owned, (root) => { (root.mcpServers as Record<string, unknown>).engram = { command: "engram" }; })).toBe(owned);
+  expect(upsertJson(owned, () => {})).toBe(owned);
+  expect(upsertJson(owned, (root) => { root.added = true; })).toBe(JSON.stringify({ mcpServers: { engram: { command: "engram" } }, other: [1, 2], added: true }, null, 2) + "\n");
+  expect(upsertJson(null, () => {})).toBe("{}\n");
+});
