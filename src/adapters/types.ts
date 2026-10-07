@@ -51,8 +51,17 @@ export type FileAction =
     }
   | { kind: "copy"; target: string; source: string; symlink?: true };
 
+/** Foreign regular file on a path Stack projects; `warning` is the notice withdrawn once it is adopted. */
+export interface AdoptableFile {
+  action: FileAction;
+  identical: boolean;
+  warning: string;
+}
+
 export interface InstallContext {
   ownedFiles?: ReadonlySet<string>;
+  /** Filled while planning. Only an apply with an explicit per-file confirmation consumes it. */
+  adoptable?: AdoptableFile[];
   writingStyle?: WritingStyleSnapshot;
   /** Raíz de la fuente canónica (stack/). */
   stackDir: string;

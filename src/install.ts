@@ -75,6 +75,8 @@ export interface InstallOptions extends OpenCodeTargetEvidenceOption {
   targetDir?: string;
   dryRun: boolean;
   yes: boolean;
+  /** Per-file consent to take over a foreign file on a Stack path. Without it nothing is adopted; `yes` never stands in for it. */
+  confirmAdoption?: (file: string, identical: boolean) => Promise<boolean>;
   writingStyle?: WritingStyleSnapshot;
   engram?: boolean;
   engramBin?: string | null;
@@ -97,7 +99,7 @@ export function makeContext(adapter: Adapter, configDir: string, targetDir?: str
   if (previous && !samePath(previous.configDir, configDir)) throw new Error(`${adapter.id}: configDir difiere del manifest; se conserva el perfil anterior.`);
   return {
     stackDir: stackRoot(), configDir, targetDir, engramBin: targetDir ? null : detectEngram(),
-    models: {} as AgentModelChoices, warnings: [],
+    models: {} as AgentModelChoices, warnings: [], adoptable: [],
     writingStyle: prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir }),
     ownedFiles: new Set(Object.values(manifest.runtimes).flatMap((row) => row?.owned ?? [])),
     ownedMcpServers: new Set(previous?.mcpOwned), ownedConfigFields: new Set(previous?.configOwned),
@@ -361,13 +363,25 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       }
       if ((id === "pi" || id === "opencode") && !browserControlProblem) ctx.browserControlInvocation = { command: BROWSER_CONTROL_BIN, args: [] };
       phase = "proyección";
-      const selectedPlan = buildScopedPlan(adapter, ctx, scope);
+      const projected = buildScopedPlan(adapter, ctx, scope);
+      const adopted: FileAction[] = [];
+      if (!opts.dryRun && opts.confirmAdoption) for (const candidate of ctx.adoptable ?? []) {
+        // A linked ancestor is not offered either: the file stays foreign, as it does without a prompt.
+        try { assertProjectionPath(candidate.action.target, opts.targetDir ?? HOME); } catch { continue; }
+        if (!await opts.confirmAdoption(candidate.action.target, candidate.identical)) continue;
+        adopted.push(candidate.action);
+        ctx.warnings.splice(ctx.warnings.indexOf(candidate.warning), 1);
+      }
+      const adoptedTargets = new Set(adopted.map((action) => action.target));
+      const selectedPlan = [...projected, ...adopted];
       const plan = [...(configSelected ? planRetiredHooks(adapter, ctx, row.owned) : []), ...selectedPlan];
       const changes = diffPlan(plan).filter((change) => change.status !== "unchanged");
       for (const { action } of changes) assertProjectionPath(action.target, opts.targetDir ?? HOME);
       if (!opts.dryRun) {
         if (configSelected && "installedContent" in style) applyWritingStyle(style as ReturnType<typeof prepareWritingStyle>);
-        createBackup(changes.filter((change) => change.status === "update").map((change) => change.action.target), `install-${id}`, path.join(state, "backups"));
+        const updates = changes.filter((change) => change.status === "update").map((change) => change.action.target);
+        createBackup(updates.filter((target) => !adoptedTargets.has(target)), `install-${id}`, path.join(state, "backups"));
+        createBackup(updates.filter((target) => adoptedTargets.has(target)), `adopt-${id}`, path.join(state, "backups"));
         const shared = new Set(configSelected ? planSystemPrompt(adapter, ctx).map((action) => action.target) : []);
         const configTargets = new Set(configSelected ? adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx).map((action) => action.target) : []);
         const ownedCandidates = new Set(selectedPlan.filter((action) => !shared.has(action.target) && !configTargets.has(action.target)).map((action) => action.target));
@@ -379,8 +393,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           }
           persist();
         });
-        // An existing Stack-owned shared file is a reference, never a claim by equality.
-        for (const target of ownedCandidates) if (ctx.ownedFiles?.has(target) && !row.owned.includes(target)) row.owned.push(target);
+        // An existing Stack-owned shared file is a reference, never a claim by equality. An adopted identical file is
+        // not written, so its confirmation is recorded here.
+        for (const target of ownedCandidates) if ((ctx.ownedFiles?.has(target) || adoptedTargets.has(target)) && !row.owned.includes(target)) row.owned.push(target);
         const keep = new Set([...plan.map((action) => action.target), ...Object.entries(readManifest(manifestPath).runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? [])]);
         for (const orphan of [...row.owned]) {
           if (!includesOwnedFile(adapter, ctx, scope, orphan) || keep.has(orphan) || path.basename(orphan) === "engram.ts") continue;
