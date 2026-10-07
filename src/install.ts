@@ -66,7 +66,7 @@ function ensureBrowserControl(execute: NativeExecutor): string {
   if (lookPath(BROWSER_CONTROL_BIN)) return "";
   const pnpm = lookPath("pnpm");
   if (!pnpm) return "falta en el PATH y pnpm tampoco está disponible para instalarlo";
-  try { execute(pnpm, ["add", "--global", "@opencode-ai/browser-control@latest"]); return ""; }
+  try { execute(pnpm, ["add", "@opencode-ai/browser-control@latest", "--global"]); return ""; }
   catch { return "falló `pnpm add --global`; la causa probable es que pnpm no tiene directorio global configurado (ERR_PNPM_NO_GLOBAL_BIN_DIR)"; }
 }
 export interface InstallOptions extends OpenCodeTargetEvidenceOption {
