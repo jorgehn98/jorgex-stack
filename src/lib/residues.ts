@@ -30,7 +30,7 @@ export const KNOWN_RESIDUES: readonly KnownResidue[] = [
 ];
 
 const REMEDY: Record<ResidueKind, string> = {
-  private: "Stack ya no lo lee; puedes borrarlo a mano.",
+  private: "Stack ya no lo lee; retíralo desde jorgex-stack → Limpiar › Residuos de versiones anteriores.",
   "user-config": "Stack no lo retira: comprueba que no lo has personalizado y bórralo a mano.",
 };
 

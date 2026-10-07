@@ -4,14 +4,15 @@ import { runMenu, type MenuOperations } from "../src/cli.js";
 function harness(answers: string[], fail = false) {
   const operate = vi.fn(async () => fail ? 1 : 0);
   const edit = vi.fn(async () => {});
+  const clean = vi.fn(async (_unit: string, _ui: unknown) => { if (fail) throw new Error("unreadable"); return 0; });
   const messages: string[] = [];
-  const operations: MenuOperations = { detect: () => ["pi"], agents: () => ["implementer", "reviewer"], operate, edit };
+  const operations: MenuOperations = { detect: () => ["pi"], agents: () => ["implementer", "reviewer"], operate, edit, clean };
   const ui = { select: async (_path: string, options: { value: string; label: string }[]) => {
     const value = answers.shift()!;
     expect(options.some((option) => option.value === value)).toBe(true);
     return value;
   }, confirm: vi.fn(async () => true), info: (message: string) => { messages.push(message); } };
-  return { operations, ui, operate, edit, messages };
+  return { operations, ui, operate, edit, clean, messages };
 }
 it("does nothing without a TTY, including detection", async () => {
   const h = harness([]); const detect = vi.spyOn(h.operations, "detect");
@@ -53,4 +54,17 @@ it("does not show the permission notice for scopes that never write permissions"
   const h = harness(["install", "skills", "back", "back", "doctor", "config", "pi", "back", "back", "back", "uninstall", "all", "pi", "back", "back", "back", "exit"]);
   await runMenu(h.operations, h.ui, true);
   expect(h.messages.some((message) => message.includes("Permisos"))).toBe(false);
+});
+it("offers both cleanup units directly, without choosing a section or runtime", async () => {
+  const h = harness(["clean", "residues", "backups", "back", "exit"]);
+  await runMenu(h.operations, h.ui, true);
+  expect(h.clean.mock.calls.map(([unit]) => unit)).toEqual(["residues", "backups"]);
+  expect(h.clean).toHaveBeenCalledWith("residues", h.ui);
+  expect(h.operate).not.toHaveBeenCalled();
+});
+it("reports a failed cleanup and stays in the menu", async () => {
+  const h = harness(["clean", "backups", "back", "exit"], true);
+  await runMenu(h.operations, h.ui, true);
+  expect(h.clean).toHaveBeenCalledOnce();
+  expect(h.messages.join(" ")).toContain("Limpieza incompleta");
 });

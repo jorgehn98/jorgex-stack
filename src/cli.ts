@@ -4,7 +4,8 @@ import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, runInstall, type RuntimeSyncStatus } from "./install.js";
 import { runUpdate } from "./update.js";
-import { runDoctor } from "./doctor.js";
+import { residueDirs, runDoctor } from "./doctor.js";
+import { cleanResidues, pruneBackups } from "./cleanup.js";
 import { runUninstall } from "./uninstall.js";
 import { editAgent } from "./models-picker.js";
 import { loadCanonicalAgents } from "./lib/canonical.js";
@@ -14,6 +15,7 @@ import { detectEngram } from "./lib/detect.js";
 import type { OperationScope } from "./lib/operation-scope.js";
 
 type Action = "install" | "update" | "doctor" | "uninstall";
+type CleanUnit = "residues" | "backups";
 type Option = { value: string; label: string };
 export interface MenuOperations {
   detect(): RuntimeId[];
@@ -21,6 +23,7 @@ export interface MenuOperations {
   operate(action: Action, scope: OperationScope, runtimes: RuntimeId[]): Promise<number>;
   edit(runtime: RuntimeId, agent: string, route: string): Promise<void>;
   managed?(): RuntimeId[];
+  clean(unit: CleanUnit, ui: MenuUI): Promise<number>;
 }
 export interface MenuUI {
   select(route: string, options: Option[]): Promise<string>;
@@ -30,8 +33,9 @@ export interface MenuUI {
 const BACK: Option = { value: "back", label: "Volver" };
 const actions: Option[] = [
   { value: "install", label: "Instalar / configurar" }, { value: "update", label: "Actualizar" },
-  { value: "doctor", label: "Doctor" }, { value: "uninstall", label: "Desinstalar" }, { value: "exit", label: "Salir" },
+  { value: "doctor", label: "Doctor" }, { value: "uninstall", label: "Desinstalar" }, { value: "clean", label: "Limpiar" }, { value: "exit", label: "Salir" },
 ];
+const cleanUnits: Option[] = [{ value: "residues", label: "Residuos de versiones anteriores" }, { value: "backups", label: "Backups antiguos" }, BACK];
 const sections: Option[] = [
   { value: "all", label: "Todo" }, { value: "skills", label: "Skills compartidas" },
   { value: "config", label: "Configuración por runtime" }, { value: "agents", label: "Subagentes" }, BACK,
@@ -65,8 +69,17 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
     }
   }
   while (true) {
-    const action = await ui.select("Inicio", actions) as Action | "exit" | "back";
+    const action = await ui.select("Inicio", actions) as Action | "clean" | "exit" | "back";
     if (action === "exit" || action === "back") return;
+    if (action === "clean") {
+      while (true) {
+        const unit = await ui.select("Limpiar", cleanUnits) as CleanUnit | "back";
+        if (unit === "back") break;
+        try { await operations.clean(unit, ui); }
+        catch { ui.info("Limpieza incompleta; revisa ruta/permisos. Lo ya retirado no se deshace."); }
+      }
+      continue;
+    }
     while (true) {
       const section = await ui.select(actions.find((option) => option.value === action)!.label, sections) as OperationScope["section"] | "back";
       if (section === "back") break;
@@ -103,6 +116,10 @@ const operations: MenuOperations = {
   managed: () => Object.keys(readManifest().runtimes) as RuntimeId[],
   agents: () => loadCanonicalAgents(path.join(stackRoot(), "agents")).map((agent) => agent.name),
   edit: editAgent,
+  clean(unit, cleanupUi) {
+    const dirs = residueDirs();
+    return unit === "residues" ? cleanResidues(dirs, cleanupUi) : pruneBackups(path.join(dirs.stateDir, "backups"), cleanupUi);
+  },
   async operate(action, scope, runtimes) {
     const opts = { scope, runtimes, dryRun: false, yes: false };
     if (action === "doctor") return runDoctor(opts);

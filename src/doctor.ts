@@ -10,16 +10,19 @@ import { HOME } from "./lib/paths.js";
 import { readTextIfExists } from "./lib/fsx.js";
 import { includesOwnedFile, type OperationScope } from "./lib/operation-scope.js";
 import { listBackups } from "./lib/backup.js";
-import { findResidues, formatBytes, treeBytes } from "./lib/residues.js";
+import { findResidues, formatBytes, treeBytes, type ResidueDirs } from "./lib/residues.js";
 
 const KIND_LABEL = { private: "privado", "user-config": "configuración del usuario" } as const;
-/** Informative only: residues and backups never change doctor's exit code. */
-function reportResidues(targetDir?: string): void {
-  const configDirs: { opencode?: string; pi?: string } = {};
+export function residueDirs(targetDir?: string): ResidueDirs {
+  const configDirs: ResidueDirs["configDirs"] = {};
   for (const id of ["opencode", "pi"] as const) {
     try { configDirs[id] = configDirectory(id, targetDir); } catch { /* undetectable runtime: its residues are not looked up */ }
   }
-  const residues = findResidues({ stateDir: stateDirectory(targetDir), configDirs });
+  return { stateDir: stateDirectory(targetDir), configDirs };
+}
+/** Informative only: residues and backups never change doctor's exit code. */
+function reportResidues(targetDir?: string): void {
+  const residues = findResidues(residueDirs(targetDir));
   if (!residues.length) return;
   p.log.info([`Residuos de versiones anteriores: ${residues.length}. Doctor no los retira.`,
     ...residues.map((residue) => `  [${KIND_LABEL[residue.kind]}] ${residue.path} (${formatBytes(residue.bytes)}). ${residue.remedy}`)].join("\n"));
@@ -28,7 +31,7 @@ function reportBackups(root: string): void {
   try {
     if (!fs.lstatSync(root, { throwIfNoEntry: false })) return;
     const count = listBackups(root).length;
-    p.log.info(`Backups: ${count} snapshot${count === 1 ? "" : "s"}, ${formatBytes(treeBytes(root))} en ${root}. No se podan automáticamente.`);
+    p.log.info(`Backups: ${count} snapshot${count === 1 ? "" : "s"}, ${formatBytes(treeBytes(root))} en ${root}. No se podan automáticamente; usa jorgex-stack → Limpiar › Backups antiguos.`);
   } catch { p.log.warn(`Backups: no se puede leer ${root}; revisa ruta/permisos.`); }
 }
 
