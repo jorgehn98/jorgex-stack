@@ -9,6 +9,28 @@ import { readManifest } from "./lib/manifest.js";
 import { HOME } from "./lib/paths.js";
 import { readTextIfExists } from "./lib/fsx.js";
 import { includesOwnedFile, type OperationScope } from "./lib/operation-scope.js";
+import { listBackups } from "./lib/backup.js";
+import { findResidues, formatBytes, treeBytes } from "./lib/residues.js";
+
+const KIND_LABEL = { private: "privado", "user-config": "configuración del usuario" } as const;
+/** Informative only: residues and backups never change doctor's exit code. */
+function reportResidues(targetDir?: string): void {
+  const configDirs: { opencode?: string; pi?: string } = {};
+  for (const id of ["opencode", "pi"] as const) {
+    try { configDirs[id] = configDirectory(id, targetDir); } catch { /* undetectable runtime: its residues are not looked up */ }
+  }
+  const residues = findResidues({ stateDir: stateDirectory(targetDir), configDirs });
+  if (!residues.length) return;
+  p.log.info([`Residuos de versiones anteriores: ${residues.length}. Doctor no los retira.`,
+    ...residues.map((residue) => `  [${KIND_LABEL[residue.kind]}] ${residue.path} (${formatBytes(residue.bytes)}). ${residue.remedy}`)].join("\n"));
+}
+function reportBackups(root: string): void {
+  try {
+    if (!fs.lstatSync(root, { throwIfNoEntry: false })) return;
+    const count = listBackups(root).length;
+    p.log.info(`Backups: ${count} snapshot${count === 1 ? "" : "s"}, ${formatBytes(treeBytes(root))} en ${root}. No se podan automáticamente.`);
+  } catch { p.log.warn(`Backups: no se puede leer ${root}; revisa ruta/permisos.`); }
+}
 
 export interface DoctorOptions { scope?: OperationScope; targetDir?: string; runtimes?: RuntimeId[]; opencodeTargetMajor?: number }
 export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
@@ -19,6 +41,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
   if (configSelected && !opts.targetDir && (!engram || !engramVersion(engram))) { p.log.warn("Engram binario ausente o no responde; doctor no lo instala ni prueba memorias."); failures++; }
   try { readManifest(path.join(stateDirectory(opts.targetDir), "manifest.json")); }
   catch { p.log.error("Manifest ilegible: restaura un backup antes de mutar configuración."); return 1; }
+  reportResidues(opts.targetDir);
+  reportBackups(path.join(stateDirectory(opts.targetDir), "backups"));
   for (const id of opts.runtimes ?? Object.keys(ADAPTERS) as RuntimeId[]) {
     try {
       const adapter = ADAPTERS[id];

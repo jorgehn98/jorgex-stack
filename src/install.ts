@@ -247,6 +247,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const row: RuntimeManifest = { configDir, owned: [...old?.owned ?? []], mcpOwned: [...old?.mcpOwned ?? []], configOwned: [...old?.configOwned ?? []], packages: [...old?.packages ?? []], engram: old?.engram, updatedAt: old?.updatedAt ?? new Date().toISOString() };
       const persist = () => {
         if (JSON.stringify(readManifest(manifestPath).runtimes[id]) === JSON.stringify(row)) return;
+        row.updatedAt = new Date().toISOString();
         if (!manifestBackedUp) {
           createBackup([manifestPath], "manifest", path.join(state, "backups"));
           manifestBackedUp = true;

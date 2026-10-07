@@ -60,6 +60,30 @@ Desinstalar retira solo recursos gestionados seleccionados, con confirmación y 
 
 No hay migrador universal para instalaciones históricas. La retirada explícita del paquete jorgex-pi y de scripts/plugins registrados propios no migra sesiones ni historia. Los backups pueden recuperarse manualmente en sus rutas originales después de revisar el contenido; no hay comando público Restore.
 
+### Residuos de versiones anteriores
+
+Versiones anteriores de Stack dejaron archivos y directorios que la versión actual ya no lee. Doctor los lista una vez por ejecución, con ruta, tamaño, clase y paso para retirarlos, y resume `~/.jorgex-stack/backups` con el número de snapshots y el tamaño total. Es solo lectura: no borra nada y su resultado no cambia por residuos ni por backups. La detección es únicamente por existencia de la ruta; `updatedAt` de cada runtime en el manifest se renueva solo cuando su fila cambia.
+
+**Privados**: están en directorios que solo Stack creó.
+
+| Base | Rutas |
+| --- | --- |
+| `~/.jorgex-stack/` | `install-mode.json`, `model-map.json`, `primary-model.json`, `pi-receipt.json`, `pi-projection-receipt.json`, `playwright-cli.json`, `devtools-mcp.json`, `packages/`, `.browser-managed/` |
+| Configuración de Pi | directorios `stage-*`, `jorgex-pi/`, `npm/jorgex-pi-managed/` |
+
+**En configuración del usuario**: Stack los lista y nunca los retira, porque sin manifest no puede probar que sigan siendo suyos. Comprueba que no los has personalizado antes de borrarlos a mano.
+
+| Base | Rutas |
+| --- | --- |
+| Configuración de OpenCode | `plugins/stack-hooks.ts`, `commands/xreview.md` |
+| Configuración de Pi | `prompts/lean-audit.md`, `extensions/jorgex-compact-tools/` |
+
+**Valores dentro de archivos**: Doctor no los detecta, porque no inspecciona contenido. Se revisan y retiran a mano:
+
+- Servidor MCP `chrome-devtools` en la configuración de OpenCode y de Codex.
+- `theme: "JorgeX"` en la configuración de Pi.
+- Dependencia `pi-mcp-adapter` en `npm/package.json` de Pi.
+
 ## Desarrollo y CI
 
 ```sh
