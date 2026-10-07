@@ -191,6 +191,16 @@ it("adopts a different foreign file after confirmation: backup, canon and owners
   expect([fs.readFileSync(path.join(state, "manifest.json"), "utf8"), fs.readdirSync(path.join(state, "backups"))]).toEqual(settled);
   expect(fs.readFileSync(file, "utf8")).toBe(canon);
 });
+it("keeps the model and effort of an adopted subagent, as it does for an owned one", async () => {
+  const { adoptOptions, file, canon } = await historicAgent();
+  const personal = canon.replace("---\n", '---\nmodel: "personal"\nthinking: "personal-effort"\n');
+  fs.writeFileSync(file, personal.replace(/\n$/, "\nlocal note\n"));
+  const confirmAdoption = vi.fn(async () => true);
+  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
+  expect(confirmAdoption.mock.calls).toEqual([[file, false]]);
+  expect(fs.readFileSync(file, "utf8")).toBe(personal);
+  expect(readAgentModel("pi", file).selection).toEqual({ model: "personal", variant: "personal-effort" });
+});
 it("adopts an identical foreign file by recording ownership only, without writing or backing it up", async () => {
   const { adoptOptions, file, canon, adoptBackups } = await historicAgent();
   const confirmAdoption = vi.fn(async () => true);
