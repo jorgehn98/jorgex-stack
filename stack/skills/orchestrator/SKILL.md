@@ -76,7 +76,7 @@ Own the result, not a procession of agents.
 - Record base and SHA, parent or prerequisite, and merge order in the plan.
 - A Ready parent is immutable. Only a retarget or a rewritten parent in stacked PRs invalidates evidence: return the affected PR to draft and recompute diff, coverage and checks, because the same head does not preserve it.
 - The base branch advancing does not return a PR to draft or invalidate its evidence. An independent PR integrates the base once, when its merge turn starts.
-- Work on PRs in parallel, but in each repository only one at a time enters the merge turn: integrate the base, mark Ready, pass checks, merge. The turn starts with the user's explicit order; several PRs merge in series, in the order given. A finished PR stays draft until its turn. This is a written convention: do not build locks, queues or coordination between sessions.
+- Work on PRs in parallel, but in each repository only one at a time enters the merge turn: integrate the base, mark Ready, pass checks, merge. After the user's explicit merge order, the PR joins the repository's merge queue and takes the turn when it arrives; the user does not dictate or watch the order. If the repository defines no queue, ask once. Wait for the turn with one background command that covers the whole condition and is bounded in hours, and stay silent until it ends. A finished PR stays draft until its turn. The queue is the one the repository defines: do not build locks or coordination between sessions of your own.
 - After a parent merges, check the child's real target before any merge.
 - Ready is not a pause: continue approved safe work. Do not invent work to stay busy.
 
