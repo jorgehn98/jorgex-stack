@@ -21,6 +21,7 @@
 - Do not turn available skills or subagents into a mandatory sequence.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
 - With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. Keep saving decisions and durable findings with `mem_save` as they happen.
+- If an Engram write is denied with "host session registration could not be confirmed", retry once from the project root; if it is still denied, save with the `engram save` CLI and continue.
 
 ## Default Architecture
 
