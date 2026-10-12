@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: twelve local skills, six subagents and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
+Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: thirteen local skills, six subagents and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
 
 ## Quick start
 
@@ -46,13 +46,13 @@ Missing runtimes are not installed when you open a screen. Updating configuratio
 
 ## Shared canon
 
-**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, retro, skill-creator, to-spec, visual-director, what and xreview. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
+**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, project-architect, retro, skill-creator, to-spec, visual-director, what and xreview. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
 
 **Subagents:** implementer, analyst, reviewer, security-auditor, simplifier and generalist. The primary agent belongs to the runtime and loads orchestrator as a skill. There are no tiers and no factory models or efforts, and Stack does not impose `defaultProvider`, `defaultModel` or `defaultThinkingLevel` on Pi. Implementer owns code and tests; simplifier is always read-only. Models are saved per agent in its native file, preserving body and permissions.
 
 A single profile serves both human and programmatic use. Native APIs (SDK/CLI, Codex app-server, OpenCode v2 server, Pi RPC) allow structured operations according to each host, not a universal takeover of an open TTY. Herdr is neither installed nor configured: an existing personal integration is kept.
 
-The canonical workflow is [orchestrator](stack/skills/orchestrator/SKILL.md) and is not duplicated here. Visual Director, retro and what keep their manual-invocation limits. The [active Visual Director](stack/skills/visual-director/README.md) is portable; its [historical dossier](docs/research/visual-director/README.md) is not a runtime dependency and is not included in the npm package. Likewise, the [historical Landing Launch dossier](docs/research/landing-launch/README.md) is not a runtime dependency and is not packaged; it was built with material from Marketing Skills (MIT), whose notice ships in [stack/skills/landing-launch/NOTICE.md](stack/skills/landing-launch/NOTICE.md).
+The canonical workflow is [orchestrator](stack/skills/orchestrator/SKILL.md) and is not duplicated here. Visual Director, retro and what keep their manual-invocation limits. The [active Visual Director](stack/skills/visual-director/README.md) is portable; its [historical dossier](docs/research/visual-director/README.md) is not a runtime dependency and is not included in the npm package. Likewise, the [historical Landing Launch dossier](docs/research/landing-launch/README.md) is not a runtime dependency and is not packaged; it was built with material from Marketing Skills (MIT), whose notice ships in [stack/skills/landing-launch/NOTICE.md](stack/skills/landing-launch/NOTICE.md). The [historical Project Architect dossier](docs/research/project-architect/README.md) follows the same rule; its decision record template derives from MADR (`MIT OR CC0-1.0`), noted in [stack/skills/project-architect/NOTICE.md](stack/skills/project-architect/NOTICE.md).
 
 ## Configuration and integrations
 
