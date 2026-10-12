@@ -2,7 +2,17 @@
 
 Use technology according to the visual job. Preserve the existing application stack unless changing it is part of the brief. Cover both the visual journey and the interface states before adding heavy graphics.
 
+## Marketing page versus product UI
+
+Establish which one this is before applying the rest; they are judged by different bars, and a page can contain both (a landing with an embedded demo).
+
+- **Marketing or expressive page**: the visitor decides and leaves. Judge it by narrative, one defining moment and a clear call to action; "Two speeds" and "Narrative and CRO" below apply.
+- **Product or application UI**: the user returns and works. Judge it by consistency across screens, information density that fits the task, component hierarchy, tables and long forms that stay scannable, persistent navigation and the empty, error and loading states. Impact is not the bar: quiet and predictable is often right, and a signature moment or scroll narrative usually does not belong.
+- Reuse the existing components and tokens of a product before inventing new ones; a new pattern needs a reason the current ones cannot meet.
+
 ## Two speeds: read vs act
+
+This section and the next describe a page with a story and a conversion goal.
 
 Design for two reading speeds: a **read** path that lets a visitor understand without being pushed, and an **act** path with an independent call to action. Do not hijack the reader: motion, autoplay or scroll behavior must not capture control away from someone who is reading. Both paths can share one page; the CTA does not need to interrupt comprehension.
 
