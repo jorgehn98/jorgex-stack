@@ -61,7 +61,7 @@ Anything that is not a public marketing page is outside this skill.
 2. Do phase 1 and store the brief where the project keeps its documentation (for example `docs/landing/<page>.md`, or whatever folder it already uses). It is the context every other phase reads; do not repeat questions already answered.
 3. Walk the phases in order. In each one: load its reference, decide with the user whatever is material (market, informal or formal address, analytics tool, stance on AI training crawlers, price), implement, verify, and meet the gate before moving on.
 4. When phase 11 is done, deliver a summary: what is operational, which decisions were made, which volatile facts were verified and when, and what remains pending on third parties (lawyer, provider).
-Small, well-understood changes are made directly; do not turn every adjustment into a process. If the work is large and needs planning or coordination, lean on `orchestrator`.
+Small, well-understood changes are made directly; do not turn every adjustment into a process. If a material ambiguity remains after the phase 1 brief, `grilling` can resolve it; if the page is complex (own checkout, several integrations), `to-spec` can turn the approved plan into tasks.
 
 ## Audit mode
 
