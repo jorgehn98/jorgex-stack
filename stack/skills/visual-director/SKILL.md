@@ -54,7 +54,7 @@ If a reference is not enough, follow the official external documentation it cite
 
 ## Fit into the current work
 
-- Inspect the existing brief, approved direction, brand assets, design documentation, components and technical constraints before asking questions.
+- Inspect the existing brief, approved direction, brand assets, design documentation, components and technical constraints before asking questions. If `docs/decisions/` exists, read it for the stack and platform already decided (project type, rendering, framework).
 - Own visual decisions, not the project's orchestration. Keep existing approval, dependency, Git and delivery rules; this skill does not authorize installing tools, spending, uploading or publishing.
 - If a PRD, plan or design document already owns a decision, update or reference it rather than creating a competing brief or visual plan. Do not create a new work board or SDD artifacts by ceremony.
 - Scale the output to the request: exploration ends with directions; a selected direction moves to a prototype; implementation proceeds only within the requested scope. Do not restart discovery when the user is already choosing or refining a direction.

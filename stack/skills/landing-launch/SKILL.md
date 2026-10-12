@@ -57,7 +57,7 @@ Anything that is not a public marketing page is outside this skill.
 
 ## Build mode
 
-1. Read the approved design and the stack (Visual Director or another source). Do not redesign here; if the structure from phase 3 requires something the design lacks, go back to design and say so.
+1. Read the approved design and the stack (Visual Director or another source). Do not redesign here; if the structure from phase 3 requires something the design lacks, go back to design and say so. If `docs/decisions/` holds a decision record, read it for hosting, headers and forms instead of asking for the stack again.
 2. Do phase 1 and store the brief where the project keeps its documentation (for example `docs/landing/<page>.md`, or whatever folder it already uses). It is the context every other phase reads; do not repeat questions already answered.
 3. Walk the phases in order. In each one: load its reference, decide with the user whatever is material (market, informal or formal address, analytics tool, stance on AI training crawlers, price), implement, verify, and meet the gate before moving on.
 4. When phase 11 is done, deliver a summary: what is operational, which decisions were made, which volatile facts were verified and when, and what remains pending on third parties (lawyer, provider).
