@@ -6,6 +6,7 @@ Set the single context every phase will read: what the page must achieve, for wh
 
 - Approved design and stack (supplied by Visual Director or another source). This skill does not redesign.
 - Whatever already exists in the repo, README, current copy or the page itself (in an audit, the URL).
+- If `docs/decisions/` holds a decision record, read it for the stack, hosting and the data map instead of asking again.
 
 ## Decide
 

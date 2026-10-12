@@ -12,6 +12,7 @@ Index: Input · Decide (input questions and document matrix) · Do (how to use v
 - Chosen analytics tool and its consent impact (08): it determines whether there is a banner.
 - What is collected and where it goes (07): fields, data processors, marketing checkbox.
 - Site-level, if it already exists: policy, legal notice, banner and contracts with data processors.
+- If `docs/decisions/` holds a data map (personal data, store, retention, region), read it before deciding documents, consents and banner; it narrows the questions below but does not replace them.
 
 ## Decide
 
