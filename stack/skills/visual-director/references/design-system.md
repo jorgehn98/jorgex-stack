@@ -2,6 +2,8 @@
 
 Use this when the user has no locked brand system or when an existing system must be translated into motion, video or fixed graphics.
 
+Dose expression by type. A marketing page or campaign can carry a strong voice and a defining moment; a product UI needs a restrained, consistent system where density, legibility and component states come first (see [frontend routing](frontend-routing.md)). The guidance below on voice, alignment bias and signature motion applies in full to the first and in reduced form to the second.
+
 ## Palette: start from meaning, build roles
 
 Choose color from the subject and desired perception, not a generic moodboard. Identify dominant material/world (paper, glass, metal, plastic, fabric, light, nature, UI), temperature, energy, trust level and content type.
