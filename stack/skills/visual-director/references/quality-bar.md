@@ -37,7 +37,7 @@ First seconds establish interest quickly enough for the platform; every scene ha
 
 ## Fixed-graphic checks
 
-Message and eye order are clear; copy is exact; the crop preserves meaning; the piece reads at the actual size; dimensions, alpha and color suit the destination; fonts and assets are licensed.
+For explanatory figures, also check two readings (one clear object at 1x, something true to find when zoomed) and that every number shown comes from the model that moves the parts; see [explanatory figures](explanatory-figures.md). Message and eye order are clear; copy is exact; the crop preserves meaning; the piece reads at the actual size; dimensions, alpha and color suit the destination; fonts and assets are licensed.
 
 ## 3D checks
 
