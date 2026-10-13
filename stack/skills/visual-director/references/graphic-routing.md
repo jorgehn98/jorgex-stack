@@ -25,7 +25,7 @@ An approved invariant composition is **recomposed** for each aspect ratio and ta
 
 ## Variants and composition
 
-For a poster or thumbnail, produce compositional crop variants anchored to the approved subject and copy, not a grid of near-identical options. For a slide, decide the chart type from the data and the hierarchy, and review it at the destination size with a real reader in mind. Keep diagram geometry separate from illustration.
+For a poster or thumbnail, produce compositional crop variants anchored to the approved subject and copy, not a grid of near-identical options. For a slide, decide the chart type from the data and the hierarchy, and review it at the destination size with a real reader in mind. Keep diagram geometry separate from illustration. When the illustration must explain a hard concept through a crafted object, see [explanatory figures](explanatory-figures.md).
 
 ## Fixed slide vs interactive
 

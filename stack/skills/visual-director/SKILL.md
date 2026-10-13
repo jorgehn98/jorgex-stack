@@ -32,6 +32,7 @@ Classify the request (`NEW` / `REDESIGN` / `CONTINUATION` / `EDIT`), identify th
 | [frontend routing](references/frontend-routing.md) | The deliverable is a web page, interface, product UI or interactive experience. |
 | [video routing](references/video-routing.md) | The deliverable is audiovisual: programmatic, recorded, edited, or a mix. |
 | [graphic routing](references/graphic-routing.md) | The deliverable is fixed: poster, banner, thumbnail, illustration or slide. |
+| [explanatory figures](references/explanatory-figures.md) | A hard idea must be explained with a crafted, often interactive illustration (physical metaphor, live readout). |
 | [motion graphics](references/motion-graphics.md) | Motion has a defined role in the concept. |
 | [3D and shaders](references/3d-shaders.md) | A required idea depends on spatial, material or procedural graphics. |
 | [generative media](references/generative-media.md) | Generating images/video, or translating generated footage into authored graphics. |
