@@ -27,7 +27,9 @@ Order: baseline, budgets, LCP, CLS, INP, third parties, delivery, accessibility,
 
 - **Field data** (real users; this is what counts): CrUX (28 days, Chrome only), PageSpeed Insights, the Search Console Core Web Vitals report or your own RUM. Evaluate the **75th percentile** of visits, separately for mobile and desktop, and pass only if **all three** metrics meet the threshold: LCP ≤ 2.5 s, INP ≤ 200 ms (> 500 ms is poor), CLS ≤ 0.1.
 - **Lab data** (reproducible; for debugging and comparing before deploying): Lighthouse and WebPageTest. It does not predict INP (there is no real interaction; Lighthouse uses TBT as a proxy and can show a good TBT with a poor INP) or CLS shifts during scrolling or after interactions.
+- **Measure a production build, never the development server**: locally that is the built output served as it ships; when the difference matters (CDN, cache, compression, third-party scripts), measure the deployed build in staging or production, because a development build measures none of those.
 - A new page has no field data: CrUX needs enough traffic and 28 days. Until then, use lab data with a slow mobile profile and throttled network, test on a real low-end Android and run RUM from day one.
+- In a site-wide audit, measure the pages of the funnel (the two or three slowest plus the page the CTA leads to), not only the homepage.
 - Measure 3-5 times and use the median. Record the baseline (date, tool, device profile) so you can compare.
 - The Lighthouse score is a summary, not the goal: the goal is field metrics and conversion.
 
@@ -36,6 +38,7 @@ Order: baseline, budgets, LCP, CLS, INP, third parties, delivery, accessibility,
 - Set limits and force optimizing, removing or not adding when a change exceeds them. Three types: **quantity** (JS, images, number of fonts and third parties), **user milestones** (LCP, TBT/INP, CLS) and **rules** (Lighthouse score).
 - Old web.dev figures (3G network, Moto G4): under 170 KB of compressed critical-path resources, under 170 KB of JS on mobile, interactive in under 5 s on slow 3G. Take them as an order of magnitude, not a rule; TTI is no longer a primary metric (verify in the Lighthouse documentation).
 - Starting point for a landing (hypothesis, adjust after measuring): total around 1-1.5 MB without video, compressed JS below ~150-200 KB unless necessary, one or two font families with few weights, a single main image in the hero.
+- **Composition before cuts.** When a budget is exceeded, find out what is in it before removing anything: a bundle analyzer (webpack-bundle-analyzer, the framework's build report) shows which dependency, route or asset contributes the weight. The usual results: replacing a full-library import with the modules actually used, and loading heavy widgets (maps, video, chat, charts, editors) through a dynamic import so they never enter the initial bundle.
 - Enforce them on every deploy (Lighthouse CI, bundlesize or the bundler's features) so a regression fails the build. Without CI, manual review with the checklist in 11-qa-launch-iteration.md.
 
 ### 3. LCP (main element)
@@ -72,6 +75,7 @@ Order: baseline, budgets, LCP, CLS, INP, third parties, delivery, accessibility,
 - Brotli or gzip for HTML, CSS, JS and SVG; HTTP/2 or HTTP/3; modern TLS; CDN in front of the origin; images through the CDN with negotiated format and responsive sizes.
 - Cache (web.dev): resources with a hash in the file name get `Cache-Control: max-age=31536000` (`immutable` is ignored by some browsers); **HTML with `no-cache`** (revalidates with ETag and gets a 304) so a deploy arrives right away; `no-store` only for what must never be stored; `public`/`private` depending on whether a CDN may store it.
 - Common mistakes: omitting `Cache-Control` (the browser guesses), long lifetime on unversioned URLs (stale HTML or CSS after deploying), duplicate URLs for the same content, mixing stable and changing code in one file.
+- **If the page has its own backend** (the form handler, an API route), keep it in the same region as the data or the service it reads on every request: a cross-region hop adds to TTFB on each submission. A static page has no such concern.
 - Security headers are in 11-qa-launch-iteration.md.
 
 ### 8. Accessibility (WCAG 2.2 AA)
@@ -101,7 +105,7 @@ It is a reasonable target and also a legal risk (lawsuits in the US; an obligati
 
 ## Verify
 
-- PageSpeed Insights and Lighthouse with a slow mobile profile, median of 3-5 runs; DevTools (Performance, Network) for the LCP element and long tasks.
+- PageSpeed Insights and Lighthouse with a slow mobile profile against the deployed build, median of 3-5 runs; DevTools (Performance, Network) for the LCP element and long tasks.
 - Inspect the served HTML: LCP image without `loading="lazy"`, with `fetchpriority`, `width`/`height` on media.
 - `curl -I` on the HTML and on hashed resources to check compression and `Cache-Control`.
 - Reload with the consent banner active: no content shift.
@@ -111,7 +115,7 @@ It is a reasonable target and also a legal risk (lawsuits in the US; an obligati
 
 | Check | How to verify (evidence) | Severity if it fails |
 |---|---|---|
-| LCP, INP and CLS within threshold (75th percentile, mobile) | Field data in PageSpeed Insights, CrUX or Search Console; without data, lab data with a slow mobile profile and median of 3-5 runs | High (Blocking if mobile performance is very poor) |
+| LCP, INP and CLS within threshold (75th percentile, mobile) | Field data in PageSpeed Insights, CrUX or Search Console; without data, lab data with a slow mobile profile on a production build and median of 3-5 runs | High (Blocking if mobile performance is very poor) |
 | The LCP image is discovered early and is not lazy-loaded | Served HTML without JS: `src`/`srcset` present, no `loading="lazy"`, `fetchpriority="high"` | High |
 | No layout shift from media, fonts or banner | DevTools capture or recording (Layout Shift) with the banner visible; `width`/`height` in the HTML | High |
 | INP: key interactions respond | RUM or PageSpeed for the slow interaction; DevTools profile of menu, cookies, form and CTA | Medium |
