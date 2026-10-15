@@ -48,7 +48,8 @@ Cases: landing or content without a server, static hosting. SSR or light API rou
 - Domain registered to the project owner, with automatic renewal, MFA and a second administrator. TLS fully automatic; certificate validity is shortening on a schedule set by the CA/Browser Forum, so check the current schedule before relying on a renewal interval.
 - Minimal headers: HSTS with a short `max-age` first, and `preload` only when certain. A strict CSP with nonces or hashes, starting in report-only mode. Third-party scripts on a landing page can make CSP expensive.
 - Cost: estimate by billing dimensions, not by price list. Separate alerts from caps: check on the day how each provider behaves (notify only, pause after a delay, or no cap). Set an early alert from the first day. Use a hard cap when the business prefers downtime to an unexpected bill; if the provider has none, a tested own switch. Cap pay-per-use dependencies too. The payment account belongs to the owner.
-- Region: compute and database in the same region, chosen for residency, user proximity or database availability. The platform default may be wrong for your market. A database region is usually fixed at creation. Measure before adding regions. With edge functions over a regional database, the cross-region hop is the bottleneck.
+- Region: compute and database in the same region, chosen for residency, user proximity or database availability. The platform default may be wrong for your market. A database region is usually fixed at creation. Measure before adding regions. With edge functions over a regional database, the cross-region hop is the bottleneck. The same applies to the form handler or API route of a landing: keep it in the region of the data it reads on every request.
+- **Images and fonts**: decide where the pipeline lives — the build, the host or CDN with on-the-fly transforms, or the framework's image component — because a host that neither resizes nor transcodes means doing it before deploy and uploading the results. Decide as well whether fonts are self-hosted or come from a third-party service: self-hosting removes one request from the critical path and a transfer of the visitor's IP that the legal phase of landing-launch reads.
 - IaC: once a second environment, a second person or an audit requirement appears; before that, document resources manually. IaC on a landing page or on a managed service with a dashboard is over-engineering [criterion].
 
 ### D. Observability level
@@ -94,12 +95,12 @@ They do not fix the choice. The brief answers and the checks in this file decide
 
 ## Deliverable
 
-- Decision-record section (08-decision-record-and-skeleton.md): hosting model and provider category (plus the chosen or preferred provider and its check); environments; CI/CD and rollback flow; domain and owner; region and its reason; cost estimate by dimension with alerts and cap; observability level; discarded alternatives; signals that would trigger a review.
+- Decision-record section (08-decision-record-and-skeleton.md): hosting model and provider category (plus the chosen or preferred provider and its check); environments; CI/CD and rollback flow; domain and owner; region and its reason; image and font pipeline; cost estimate by dimension with alerts and cap; observability level; discarded alternatives; signals that would trigger a review.
 - Volatile data with its link and date; `[NEED: ...]` where information is missing.
 
 ## Verify
 
-- The chosen model meets the requirements in 01-05: long-running processes, region, residency, queues, realtime.
+- The chosen model meets the requirements in 01-05: long-running processes, region, residency, queues, realtime, image optimization.
 - Plan and limits are opened at the provider's source on the day and fit the use, especially commercial use against a free plan.
 - Compute and database regions match, or the difference is justified.
 - Rollback tested once; spend alert active; MFA on provider, domain and DNS.

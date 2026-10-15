@@ -26,7 +26,7 @@ Ask only for what is missing and would change a decision:
 3. **Data**: what is stored, whether it includes personal or sensitive data (health, minors, payments), who writes and who reads it, and how long it is kept.
 4. **Functions that force architecture**: accounts and permissions, payments, real-time, heavy files, search, AI, offline use, native mobile, mandatory integrations.
 5. **Visibility**: public and indexable (SEO) or behind login; languages and regions.
-6. **Constraints**: maximum monthly budget, deadline, tolerance for vendor lock-in, data residency or compliance requirements.
+6. **Constraints**: maximum monthly budget, deadline, tolerance for vendor lock-in, data residency or compliance requirements, and the devices and networks the audience really uses (a public page read on a low-end Android over 4G has different limits from an internal tool on desktop; the answer feeds phase 03).
 7. **Team and maintenance**: who builds it, who maintains it, what they already know, who edits the content.
 8. **Lifespan**: disposable prototype, product to validate, or long-lived system.
 9. **Existing assets**: for an existing project, repository, stack, domain, hosting and services; for a new one, what the user already has or knows. Reuse unless the goal prevents it.
@@ -83,7 +83,7 @@ Rules:
 Record in `docs/decisions/00-brief.md`, or in the documentation folder the project already uses:
 
 - One-sentence purpose, project type and lifespan.
-- Users and expected scale; data and its sensitivity.
+- Users, expected scale and the devices and networks they use; data and its sensitivity.
 - Functions that condition the architecture; main constraints.
 - Team, maintenance and content editors.
 - Existing assets, or "none" for a new project.

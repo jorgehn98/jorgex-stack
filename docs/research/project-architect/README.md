@@ -29,6 +29,7 @@ La skill no se ha probado todavía con evaluaciones (casos de prueba ni optimiza
 - Lo legal queda fuera: la fase de datos solo deja un mapa de datos (datos personales, almacén, retención, región) que lee la fase legal de landing-launch.
 - La tienda online es un caso ocasional con dos caminos (plataforma existente o a medida), sin entrar en carrito ni pagos; móvil se trata brevemente.
 - La skill final es en inglés, como landing-launch.
+- Añadido posterior (2026-10-14), a partir de una revisión de la fase 10 de landing-launch: la fase 01 recoge como restricción el dispositivo y la red del público y ese dato alimenta la fase 03, cuyo criterio numérico de rendimiento incluye ya el peso de JS en cliente; la fase 06 decide el pipeline de imágenes y fuentes y deja el handler del formulario en la región de los datos.
 
 ## Qué se descartó y por qué
 

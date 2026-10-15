@@ -28,7 +28,7 @@ Index: Input · Decide · Do · Deliverable · Verify · Audit · Gate · Not ve
 
 ### Optional criteria (only when the domain requires them)
 
-6. **Performance and concurrency.** Only with a numeric requirement and a measurement, such as p95 latency, requests per second or cost per request. Without a number it is not a criterion. The bottleneck is usually the database or the network, not the language. `[NEED: measured requirement]`
+6. **Performance and concurrency.** Only with a numeric requirement and a measurement: p95 latency, requests per second or cost per request on the server, and the initial JS and transfer budget on anything the browser runs, which is what decides a public page. Without a number it is not a criterion. The bottleneck is usually the database or the network, not the language. `[NEED: measured requirement]`
 7. **Typing and memory safety.** Static typing helps growing teams, frequent refactors and contracts between modules. It is excess for short-lived prototypes, one-person scripts or pages without logic. TypeScript types and Python annotations are not enforced at runtime, so validate external input regardless. Memory safety matters for native code and hostile input (parsers, engines, low-level components). None of the open sources consulted justifies changing language for memory safety in typical web or SaaS code on a garbage-collected runtime. `[criterion]`
 8. **Cost of change later.** A language is cheap to replace behind explicit contracts (HTTP, schemas, queues) and expensive inside a monolith without boundaries. Prefer explicit boundaries to getting the language right the first time. `[criterion]`
 

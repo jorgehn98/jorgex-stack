@@ -27,6 +27,7 @@ La skill no se ha probado todavía con evaluaciones (casos de prueba ni optimiza
 - La fase 10 (rendimiento y accesibilidad) se añadió a petición expresa del titular, tras captación, analítica y legal (para que scripts y banner ya estén definidos) y antes de la QA final, que pasó a ser la fase 11.
 - Dos modos: crear (once fases con puertas) y auditar (completo o por área).
 - Criterio al resumir: se queda lo que tiene consecuencias, los errores frecuentes, los detalles cambiantes y el orden entre fases; se va lo básico que una IA ya sabe hacer.
+- Añadido posterior (2026-10-14), a partir de una revisión de la fase 10: medir el build de producción y no el servidor de desarrollo, auditar las páginas del embudo y no solo la portada, mirar la composición del bundle antes de recortar, y no retirar funciones, integraciones ni dependencias por rendimiento o nota sin aprobación del titular.
 
 ## Qué se descartó y por qué
 
