@@ -37,6 +37,10 @@ Keep **approved decision** separate from **pending technical verification**: a d
 
 Include only what the deliverable needs: visual intention, audience and defining idea; redesign boundary (preserve/reinterpret/unresolved); colors by semantic role with exact values only when known or proposed; typographic roles and fallbacks; layout, spacing, density, surfaces and imagery treatment; motion/camera language with meaningful limits; responsive, reduced-motion and output-format adaptations; asset sources and reuse/licensing when material is reused; intentional exceptions and unresolved decisions. For video, include framing, legibility/hold-time intent and audio relationships.
 
+## Sufficiency test
+
+A record is sufficient when another agent could build the first artifact from it without asking: what surface it is, what is preserved, what must not be copied, which rules are binding, and what would fail review.
+
 ## Provisional vs canonical
 
 Working directions and iteration tokens are provisional and do not enter the canonical kit. When the user accepts a final piece **and asks for it to serve future work**, record it as an **approved example** with its scope: values, roles, composition, image/motion/audio where applicable, assets and rights, and a link to the real example version. This is automatic with that acceptance, without ceremonial extra approval.

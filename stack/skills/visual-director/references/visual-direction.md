@@ -49,6 +49,8 @@ Use real or specific placeholder content; generic marketing phrases make a stron
 
 When references help, explain the chain: **source/context → specific characteristic → proposed translation → reason it serves this subject**. A reference can be an artifact, publication, material, tradition, place or interface. Borrow a principle, not a recognizable composition. There is no required number of references; inspiration does not grant reuse rights.
 
+For each reference, separate what to **keep** (a controllable quality such as structure, rhythm, density or tone), what to **change** to fit this subject, and what **not to copy** (logos, claims, prices, proprietary UI, copy, a recognizable composition). "Do the same style" means borrowing controllable qualities, not cloning. A measurable constraint ("one warm accent, no purple glow") steers better than an adjective ("premium"). Where real numbers are missing, leave a visible neutral marker rather than inventing a statistic.
+
 ## Redesign boundary
 
 Before proposing a redesign, distinguish **preserve / reinterpret / unresolved** for brand, content, information structure, key interactions, assets and technical constraints. A request for a more premium result does not authorize replacing the brand or changing behavior; an explicit overhaul is not constrained to cosmetics. See [design record](design-record.md) for where this boundary lives.

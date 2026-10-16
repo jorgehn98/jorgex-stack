@@ -40,11 +40,19 @@ Do not add an engine that duplicates one already serving the project. Keep one o
 
 Avoid linear timing for everything; match easing to physical and semantic behavior. UI confirmation should feel quick and decisive; large spatial movement can take longer because the eye must track it. Spring/overshoot implies elasticity or play, not every luxury or enterprise context. Constant speed suits scanners, progress and technical sweeps, not general UI. Treat durations as a system, not isolated guesses, and test at real scale and frame rate.
 
+The transition is the verb and the easing is the adverb: the same slide reads confident, dreamy or playful by curve alone. As a default, decelerating curves (ease-out) suit things entering, accelerating curves (ease-in) things leaving and ease-in-out moves between positions; entrances usually take longer than exits. Speed carries weight: roughly 0.15-0.3 s reads as energy or urgency, 0.3-0.5 s as ordinary content, 0.5-0.8 s as gravity or luxury, and longer as cinematic or atmospheric. These are starting heuristics, not rules.
+
+The tell of generated motion is sameness: one ease on every tween, one 0.4 s duration, the same offset-and-fade entrance from below, the same stagger and an ambient zoom on every scene. Vary them by role, let the slowest scene run several times slower than the fastest, and allow stillness after motion. In timed video, start the first motion a fraction after t=0 (about 0.1-0.3 s) so it does not read as a jump cut.
+
 ## Choreography and transitions
 
 For important sequences: identify the focal element; decide what prepares attention; reveal/transform the focal element; let supporting elements follow; give the result a moment to register; transition out with a relationship to what comes next. This creates a sentence rather than a pile of simultaneous tweens.
 
+Give a scene a shape: **build** (elements enter, staggered), **breathe** (content readable, alive with one ambient motion) and **resolve** (exit or decisive end). What moves first is read as most important, so stagger by importance rather than DOM order, overlap entrances instead of waiting for each to finish, and keep the whole stagger short (under about 500 ms) however many items it has.
+
 Prefer motivated transitions: match shape, match color, object continuation, camera continuation, mask from existing geometry, typographic transformation, depth/focus shift, data transformation or material transformation. Generic crossfades are fine when continuity does not matter; do not force a spectacle between every scene.
+
+A transition also carries meaning: a crossfade says "this continues", a hard cut says disruption or a change of register, a slow dissolve says drift. Do not crossfade everything. In scene-based video, treat the transition as the exit of the outgoing scene instead of also animating its content out first; the final scene is the usual exception, where a fade-out closes the piece. Pick transition energy and duration from the scene's: a quick wipe for high energy, the slowest and simplest transition for the outro.
 
 ## Kinetic typography
 
@@ -57,6 +65,13 @@ Before adding particles, define their semantic role: data points, atmosphere, en
 ## Sound and motion
 
 For video, sound shapes motion timing: music establishes macro rhythm, SFX sell contact, impact and transitions, and voiceover defines information pacing. Do not cut every visual on every beat; use sync selectively so the strongest accents stay meaningful.
+
+## When not to animate, and hard limits
+
+- Animation helps when the viewer must reorient or follow a change. Research on animated graphics (Tversky et al., 2002) found no reliable comprehension advantage over a well-made static graphic, so do not use motion to teach what a still explains better.
+- Starting ranges for UI: about 100-200 ms for micro feedback, 200-300 ms for entering elements and panels, 300-500 ms for screen-level changes. Actions repeated dozens of times a day, such as keyboard-driven commands, should not animate at all.
+- WCAG: no more than three flashes in any one second (2.3.1); motion that starts automatically and lasts over 5 s needs a way to pause, stop or hide it (2.2.2). Ambient loops stop when their view unmounts.
+- The View Transitions API does not apply `prefers-reduced-motion` by itself; handle the media query explicitly.
 
 ## Reduced motion for web
 

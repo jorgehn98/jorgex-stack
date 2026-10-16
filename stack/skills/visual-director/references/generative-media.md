@@ -28,7 +28,7 @@ For an authored figure that explains a concept through a crafted object, see [ex
 
 ## Asset roles and preparation
 
-Prepare assets for their actual consumer: a still, an opaque loop inside a window, a full-frame plate and a foreground cutout have different needs. Request alpha, depth or tracking work only when it serves selection, inspection or the intended composition, rather than processing every generated clip by default. For cutouts, inspect edges, spill, intended transparency and placement on the target background across a temporal sample; one clean matte still does not establish stable alpha or anchoring.
+Prepare assets for their actual consumer: a still, an opaque loop inside a window, a full-frame plate and a foreground cutout have different needs. Request alpha, depth or tracking work only when it serves selection, inspection or the intended composition, rather than processing every generated clip by default. For cutouts, inspect edges, spill, intended transparency and placement on the target background across a temporal sample; one clean matte still does not establish stable alpha or anchoring. For clips meant to chain, compare the last frame of one with the first of the next (pose, position, light, camera) and inspect the join itself, not each clip alone.
 
 When collecting batches, associate each selected asset with its actual job/take/candidate identity and available source, not merely its prompt text. Keep requested, submitted, received and validated states distinct in the existing asset record. An acknowledgement or an identical prompt does not prove that the intended media arrived or is ready for its consuming shot.
 
