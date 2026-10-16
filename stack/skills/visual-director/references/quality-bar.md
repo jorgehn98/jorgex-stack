@@ -20,12 +20,16 @@ Review both the **creative** axis (direction, coherence, hierarchy, rhythm, legi
 ## Common checks
 
 - **Specificity**: does the design clearly belong to this subject? Are palette, type, material and motion traceable to the brief?
-- **Hierarchy**: is the primary message obvious, one focal point at a time, with quieter secondary information and motion that reinforces rather than competes?
+- **Hierarchy**: is the primary message obvious, one focal point at a time, with quieter secondary information and motion that reinforces rather than competes? One entry dominates, with at least two of scale, weight, space, tracking and alignment pushing the same way. The failures are flat hierarchy (everything similar, such as a ladder of near-identical weights or uniform spacing) and noisy hierarchy (many things competing).
 - **Typography**: are typefaces intentional and licensed for the use, are weights/widths/line-heights coherent, is body copy readable at real size, and is display type doing useful work?
 - **Color**: is the palette role-based, is contrast sufficient for UI and captions, do accents stay meaningful, and does it survive imagery/video/3D backgrounds?
 - **Motion**: can each major animation justify its purpose, is there a consistent vocabulary, enough stillness, and are the biggest motion moments attached to the biggest content moments?
 - **Restraint**: when an effect looks unnecessary, compare with and without it; remove it only if clarity or coherence improves — do not strip intentional ambition to satisfy the pass.
 - **Stack sanity**: state each library's job in one sentence; if two tools share a job, simplify unless there is a clear reason.
+
+## Generic tells that can be checked
+
+Beyond the defaults listed in [visual direction](visual-direction.md), these can be verified by looking: more than one small tracked-caps eyebrow per three sections, or numbered eyebrows and status dots used as decoration; product "screenshots" faked from styled divs where a real capture or an honest placeholder belongs; invented metrics, logos or testimonials (leave a visible neutral marker such as "—" instead); more than three equal columns in a row, one layout family repeated down the page, or image/text zigzag three times; a hero with more than about four text elements; designer controls (viewport or platform toggles, tweak panels) left in the final product. A tell is a prompt to justify the choice, not an automatic failure; mostly proven patterns with a distinctive minority is a healthy mix.
 
 ## Web checks
 
@@ -33,7 +37,7 @@ Responsive from narrow mobile to the intended desktop range; visible keyboard fo
 
 ## Video checks
 
-First seconds establish interest quickly enough for the platform; every scene has one primary idea; on-screen copy stays readable for its duration; motion and voiceover do not compete; cuts have rhythm and motivation; the mix supports rather than masks speech; the end card/CTA holds long enough; the message survives with sound off where the destination autoplays muted; a loop joins without a visible hitch; no accidental blank or duplicate frames; a deterministic re-render is stable; codec/container/resolution/fps are correct; compression does not destroy fine lines, gradients or text.
+First seconds establish interest quickly enough for the platform; every scene has one primary idea; on-screen copy stays readable for its duration; motion and voiceover do not compete; cuts have rhythm and motivation; the mix supports rather than masks speech; the end card/CTA holds long enough; the message survives with sound off where the destination autoplays muted; a loop joins without a visible hitch; no accidental blank or duplicate frames; a deterministic re-render is stable; codec/container/resolution/fps are correct; compression does not destroy fine lines, gradients or text. For programmatic video, also: measure frame-to-frame change to catch stretches that look animated but are static; export a contact sheet around each transition at the full frame rate; sample overflow, clipping and text contrast at several timestamps rather than one; and for chained clips compare the last frame of one with the first of the next to check the seam.
 
 ## Fixed-graphic checks
 

@@ -25,7 +25,7 @@ Design for two reading speeds: a **read** path that lets a visitor understand wi
 
 ## States, focus and fallback
 
-Preserve real, distinct states: loading, empty, no-results, error and success. Keep the recovery action real, not a decorative illustration as the only way out. Keep states semantic and do not mix, for example, "no results" with "loading".
+Preserve real, distinct states: loading, empty, no-results, error and success. Keep the recovery action real, not a decorative illustration as the only way out. Keep states semantic and do not mix, for example, "no results" with "loading". Test the edges, not only the happy path: a very long title, a very large list, the empty and single-item cases. A load under about 300 ms needs no indicator, and a wait that stretches toward a minute needs a way to stop or retry. An error says what happened, why and what the user can do next.
 
 - Preserve keyboard focus: visible focus, logical order, focus return after closing popovers, `Escape` to cancel, no inconsistent tree state.
 - Keep the layout stable under reflow down to the declared narrow width; semantic relationships survive even where the reflow does not cover every exception.

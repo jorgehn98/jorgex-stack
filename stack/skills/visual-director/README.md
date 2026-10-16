@@ -73,7 +73,7 @@ Cuatro pasadas de evaluación de propuesta, cuyo material de trabajo no forma pa
 | `eval-4-edicion-video-grabado-espanol` | 5/5 | 2/5 |
 | **Total de controles contractuales** | **20/20** | **16/20** |
 
-Cobertura real: el prompt del caso 2 permite imagen estática generada como hero. **No verificados en esa ronda:** ruta de asset de vídeo explícito, *shader* / 3D cinematográfico, continuación sobre dirección aprobada, disparo automático, manejo de ediciones rutinarias y llamadas reales a recursos de OpenDesign.
+Cobertura real: el prompt del caso 2 permite imagen estática generada como hero. **No verificados en esa ronda:** ruta de asset de vídeo explícito, *shader* / 3D cinematográfico, continuación sobre dirección aprobada, disparo automático, manejo de ediciones rutinarias y llamadas reales a recursos externos de diseño.
 
 ### Ronda 2 (4 casos en español, frente a la versión original)
 
@@ -82,7 +82,7 @@ Cobertura real: el prompt del caso 2 permite imagen estática generada como hero
 | `eval-5-continuacion-y-memoria` | 5/5 | 5/5 |
 | `eval-6-web-clip-proxy-generativo` | 5/5 | 5/5 |
 | `eval-7-metadatos-y-edicion-rutinaria` | 5/5 | 5/5 |
-| `eval-8-opendesign-recursos-adversariales` | 5/5 | 5/5 |
+| `eval-8` (retirado del paquete: dependía de un recurso externo ya eliminado de la skill) | 5/5 | 5/5 |
 | **Total de controles contractuales** | **20/20** | **20/20** |
 
 Comparación ciega A/B de dos conversaciones: original preferida por registrar tiempos acordados como valores del ajuste aprobado (caso 5); empate de utilidad en el plan de vídeo (caso 6). Las puntuaciones 20/20 y 20/20 **no se agregan** como un *score* global: cada ronda evalúa controles contractuales distintos, no la misma magnitud.

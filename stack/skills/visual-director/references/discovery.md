@@ -49,7 +49,7 @@ Collect only what changes decisions:
 
 ## Question budget
 
-Use one compact round of only the material unanswered questions, then a second small round only if the answers created new critical uncertainty. There is no minimum count: a sufficient brief needs no interview. If the user delegates the decision, decide and state the assumption.
+Use one compact round of only the material unanswered questions, then a second small round only if the answers created new critical uncertainty. There is no minimum count: a sufficient brief needs no interview. If the user delegates the decision, decide and state the assumption. Attach a recommended default to each question so the user can accept them all in one reply.
 
 When the user does not know, do not answer with more abstract questions; offer two or three concrete choices with their implications (for example, restrained vs expressive, precise vs organic, editorial vs product-led).
 
