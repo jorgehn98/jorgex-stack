@@ -20,8 +20,9 @@
 - Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro` and `what` explicitly invoked.
 - Do not turn available skills or subagents into a mandatory sequence.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
-- With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. Keep saving decisions and durable findings with `mem_save` as they happen.
-- If an Engram write is denied with "host session registration could not be confirmed", retry once from the project root; if it is still denied, save with the `engram save` CLI and continue.
+- With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. This overrides "MANDATORY before done" in the Engram MCP instructions and skill. Keep saving decisions and durable findings with `mem_save` as they happen.
+- On `judgment_required`, call `mem_judge` only for candidates that may be `supersedes` or `conflicts_with`, or when your confidence is below 0.7. Skip `session_summary` candidates and saves that reuse an existing `topic_key`; unjudged candidates stay pending without affecting search.
+- If an Engram write is rejected, save it once with the CLI, `engram save "<title>" "<content>" --project <project>` (plus `--type`/`--topic` when needed); do not retry through MCP or issue parallel calls.
 
 ## Default Architecture
 

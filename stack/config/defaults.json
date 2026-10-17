@@ -1,5 +1,5 @@
 {
-  "$comment": "Defaults fresh de Claude/Codex: trabajo ordinario sin prompts y deny solo de secretos. OpenCode v2 y Pi declaran sus reglas nativas en el adapter; configuración existente preservada.",
+  "$comment": "Defaults fresh de Claude/Codex: trabajo ordinario sin prompts y deny solo de secretos; en Claude, el aviso de guardado de Engram se repite como mucho cada hora. OpenCode v2 y Pi declaran sus reglas nativas en el adapter; configuración existente preservada.",
   "claude-code": {
     "permissions": {
       "defaultMode": "bypassPermissions",
@@ -41,6 +41,9 @@
       ]
     },
     "skipDangerousModePermissionPrompt": true,
+    "env": {
+      "ENGRAM_NUDGE_COOLDOWN_SECS": "3600"
+    },
     "attribution": {
       "commit": "",
       "pr": ""
