@@ -83,7 +83,7 @@ docs/
 - Follow the project's worktree, commit and push permissions. Use native runtime worktrees or Git where appropriate.
 - Never overwrite existing work or use destructive Git/history changes without explicit authorization.
 - Keep code changes off production branches and PRs draft while they change.
-- Mark Ready only after implementation and verification; Ready is not a trigger to start review.
+- Mark Ready only after implementation, verification and `xreview` of the candidate, unless the user waives the review; Ready is not a trigger to start review.
 - Verify required checks for the current candidate before integration.
 - Merge only on explicit user request. A Ready PR or intermediate merge does not close the whole objective.
 - Work on PRs in parallel, but run one merge turn per repository at a time. After the merge order, join the repository's merge queue and take the turn when it arrives; the user does not dictate or watch the order. If the repository defines no queue, ask once. A base that advanced does not return a PR to draft; integrate it once when that turn starts, before marking Ready.
