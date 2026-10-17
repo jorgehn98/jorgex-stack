@@ -289,6 +289,7 @@ describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
     expect(settings).not.toHaveProperty("hooks");
     expect(settings.skipDangerousModePermissionPrompt).toBe(true);
     expect(settings.attribution).toEqual({ commit: "", pr: "" });
+    expect(settings.env).toEqual({ ENGRAM_NUDGE_COOLDOWN_SECS: "3600" });
 
     const permissions = settings.permissions as { defaultMode?: string; allow?: string[]; ask?: string[]; deny: string[] };
     expect(permissions.defaultMode).toBe("bypassPermissions");
