@@ -1,6 +1,6 @@
 ---
 name: xreview
-description: Review a PR, branch or local change with only the reviewers its risks need. Use on explicit request or when orchestrator needs independent review of a coherent candidate before delivery.
+description: Review a PR, branch or local change with only the reviewers its risks need. Use on explicit request, before marking a PR Ready, or when orchestrator needs independent review of a coherent candidate before delivery.
 ---
 
 # Xreview
@@ -60,6 +60,8 @@ Resolve the base in this order; never default to `main`:
 - Stop when no valid blocker remains, fixes are verified and coverage of the current candidate is justified.
 
 ## Report
+
+Write the report in the user's language.
 
 - Scope reviewed: base, head and how the base was chosen.
 - Reviewers run and skipped, with the reason.
