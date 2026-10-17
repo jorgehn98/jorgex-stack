@@ -45,6 +45,7 @@ Resolve the base in this order; never default to `main`:
 
 - Validate premises; reject duplicates and impossible scenarios.
 - Distinguish a missed bug, a regression introduced by a fix and an optional suggestion.
+- A blocking finding whose premise you cannot check yourself from the code at hand may get one independent check with fresh context (analyst: the finding and the diff) before the fix is ordered. Skip it when reading two files settles it; never run it for non-blocking findings.
 - Fix real blockers within scope and ask before a material scope expansion.
 - Do not turn optional suggestions into compulsory refactors or pursue zero observations.
 
