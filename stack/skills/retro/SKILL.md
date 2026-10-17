@@ -20,6 +20,7 @@ Run only on explicit request. A retrospective is not a phase after every task.
 - Speculative tests and expensive fixtures.
 - Missing cleanup.
 - Human waiting, command duration and model latency, kept separate.
+- Escapes: a defect found late (after review, by CI or by the user). Name the layer that should have caught it (test, check, reviewer rule or project instruction) and why it did not.
 
 ## Before recommending
 
@@ -30,4 +31,4 @@ Run only on explicit request. A retrospective is not a phase after every task.
 
 ## Output
 
-The few changes most likely to help, each with its evidence, expected benefit and uncertainty. Proposals need normal approval before implementation.
+The few changes most likely to help, each with its evidence, expected benefit and uncertainty. For an escape, the smallest change that would have caught it, or none when no cheap one exists. Proposals need normal approval before implementation.
