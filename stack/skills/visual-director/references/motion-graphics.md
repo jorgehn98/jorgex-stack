@@ -33,6 +33,7 @@ Define a project-specific vocabulary rather than animating ad hoc: entry/reveal 
 | Dense particles/sprites/2D filters | PixiJS |
 | Custom procedural material/effect | Three.js/Pixi shader layer |
 | Technical/vector explainer | Motion Canvas |
+| Hand-drawn sketch line in video | Canvas 2D repainted per frame (see [video routing](video-routing.md)) |
 
 Do not add an engine that duplicates one already serving the project. Keep one owner per property and one primary clock.
 
