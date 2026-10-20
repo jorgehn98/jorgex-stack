@@ -22,7 +22,7 @@
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
 - With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. This overrides "MANDATORY before done" in the Engram MCP instructions and skill. Keep saving decisions and durable findings with `mem_save` as they happen.
 - On `judgment_required`, call `mem_judge` only for candidates that may be `supersedes` or `conflicts_with`, or when your confidence is below 0.7. Skip `session_summary` candidates and saves that reuse an existing `topic_key`; unjudged candidates stay pending without affecting search.
-- If an Engram write is rejected, save it once with the CLI, `engram save "<title>" "<content>" --project <project>` (plus `--type`/`--topic` when needed); do not retry through MCP or issue parallel calls.
+- If an Engram write is rejected, save it once with the CLI, `engram save "<title>" "<content>" --project <project>` (plus `--type`/`--topic` when needed); do not retry through MCP or issue parallel calls. A `Claude host session ... already ended` denial after a resume or compaction is a known Engram ≤3.4.0 bug (#1624, #1934), not a safety check: use the CLI for the rest of the session without asking. Remove this sentence once Engram >3.4.0 is installed.
 
 ## Default Architecture
 
