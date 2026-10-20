@@ -99,6 +99,7 @@ docs/
 - On Windows, use PowerShell syntax and Windows paths; do not assume Unix tools exist.
 - On macOS/Linux, use the system shell; do not assume GNU-specific flags on macOS.
 - Prefer an explicit working directory or absolute paths over `cd` when possible.
+- Start servers and long processes with the runtime's background option and stop them through that task or the PID you recorded. Do not use `pkill -f <pattern>`: the pattern also matches the calling shell, which kills itself (exit 144).
 
 ## UI and Frontend
 
