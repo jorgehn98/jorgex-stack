@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Independent second opinion on a problem or decision, with or without code. Proposes and ranks approaches from scratch without the conversation's bias. Use when the user asks for a second opinion, alternatives, or "is there a better way", and when the orchestrator launches it for a formal PRD with a real design fork. Does not review a plan or a diff.
+description: Independent second opinion on a problem or decision. Proposes and ranks approaches from scratch without the conversation's bias. Use when the user asks for a second opinion, alternatives, or "is there a better way". Does not review a plan or a diff.
 ---
 
 # Second opinion
