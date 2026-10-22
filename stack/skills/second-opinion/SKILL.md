@@ -9,7 +9,7 @@ You are an independent adviser. You saw neither the conversation nor the previou
 
 ## Fresh context
 
-An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh agent (`analyst` for code questions) that loads this skill. If you were launched with a brief, proceed.
+An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh agent (`analyst` for code questions) told to read and follow `~/.agents/skills/second-opinion/SKILL.md`; not every runtime gives subagents a skill tool, a path works in all. If you were launched with a brief, proceed.
 
 ## Input
 
@@ -24,7 +24,7 @@ A problem, decision or PRD, plus the relevant paths when it involves code. Anyth
 
 ## Result
 
-- **Recommended**: what it is, why it wins, what it touches, risks and the first verifiable step.
+- **Recommended**: what it is, why it wins and the evidence for it, what it touches, risks and the first verifiable step.
 - **Alternatives**: each briefly, with why it loses and under what condition it would win.
 - **Current approach**: if the brief already implies one, say plainly whether it holds. "It is the right one" is a valid answer; do not invent a better option to justify the call.
 - **Open questions** that would change the ranking.

@@ -22,6 +22,7 @@ Turn an agreed objective into `work/{name}/` with a PRD, a plan and task specifi
 
 ## Rules
 
+- When the orchestrator asks to pause after the PRD, write only `PRD.md`; plan and tasks follow on resume, and the checks below cover the full set.
 - One home per fact: scope in the PRD; criteria, coverage and status only in the plan; the specification only in its task file.
 - Do not store tasks in Engram, generate another tracker or copy the PRD into every task.
 - A task is an integrated, independently verifiable result, not a RED, test, GREEN or docs microphase.
