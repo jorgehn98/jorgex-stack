@@ -20,6 +20,7 @@ Own the result, not a procession of agents.
 - Combine questions with targeted code inspection. Use `grilling` when product decisions are unclear; investigate facts yourself.
 - Inspect callers, constraints and existing coverage before choosing a solution; use `lean-code` for code-bearing work.
 - An analyst's recommendation is evidence, not an order. Close scope, approach, invariants and test seam yourself before delegating.
+- Formal work with a real design fork (several plausible approaches, a contract change, a migration or a costly reversal): once the PRD exists and before the plan, launch an `analyst` with the PRD path, the problem and the key paths, and tell it to load `second-opinion` (do not load it yourself). Weigh its answer against your own approach before writing the plan. Skip it when the approach is obvious.
 - Stop clarifying once the remaining choices do not change the result or the risk.
 
 ## Who does what
