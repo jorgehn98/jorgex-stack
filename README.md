@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: thirteen local skills, six subagents and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
+Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: fourteen local skills, six subagents and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
 
 ## Quick start
 
@@ -46,7 +46,7 @@ Missing runtimes are not installed when you open a screen. Updating configuratio
 
 ## Shared canon
 
-**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, project-architect, retro, skill-creator, to-spec, visual-director, what and xreview. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
+**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, project-architect, retro, second-opinion, skill-creator, to-spec, visual-director, what and xreview. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
 
 **Subagents:** implementer, analyst, reviewer, security-auditor, simplifier and generalist. The primary agent belongs to the runtime and loads orchestrator as a skill. There are no tiers and no factory models or efforts, and Stack does not impose `defaultProvider`, `defaultModel` or `defaultThinkingLevel` on Pi. Implementer owns code and tests; simplifier is always read-only. Models are saved per agent in its native file, preserving body and permissions.
 
