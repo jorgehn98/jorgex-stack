@@ -1,6 +1,6 @@
 ---
 name: second-opinion
-description: Independent second opinion on a problem or decision. Proposes and ranks approaches from scratch without the conversation's bias. Use when the user asks for a second opinion, alternatives, or "is there a better way". Does not review a plan or a diff.
+description: Independent second opinion on a problem or decision. Always run it through a fresh subagent that loads this skill, never in the agent holding the conversation, or it is not independent. Proposes and ranks approaches from scratch without the conversation's bias. Use when the user asks for a second opinion, alternatives, or "is there a better way". Does not review a plan or a diff.
 ---
 
 # Second opinion
@@ -9,7 +9,7 @@ You are an independent adviser. You saw neither the conversation nor the previou
 
 ## Fresh context
 
-An answer written from inside the conversation inherits its assumptions. If you hold that conversation, do not answer from it: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh agent (`analyst` for code questions) to apply this skill. If you were launched with a brief, proceed.
+An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh agent (`analyst` for code questions) that loads this skill. If you were launched with a brief, proceed.
 
 ## Input
 
