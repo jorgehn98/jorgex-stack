@@ -287,17 +287,17 @@ describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
   it("la config fresca trabaja sin prompts y deniega únicamente secretos", () => {
     const { settings, warnings } = run(makeCtx());
     expect(settings).not.toHaveProperty("hooks");
-    expect(settings.skipDangerousModePermissionPrompt).toBe(true);
+    expect(settings).not.toHaveProperty("skipDangerousModePermissionPrompt");
     expect(settings.attribution).toEqual({ commit: "", pr: "" });
     expect(settings.env).toEqual({ ENGRAM_NUDGE_COOLDOWN_SECS: "3600" });
 
     const permissions = settings.permissions as { defaultMode?: string; allow?: string[]; ask?: string[]; deny: string[] };
-    expect(permissions.defaultMode).toBe("bypassPermissions");
+    expect(permissions.defaultMode).toBe("auto");
     expect(permissions.ask ?? []).toEqual([]);
     expect(permissions.deny.every((rule) => /^(Read|Edit)\(\/\/\*\*\//.test(rule))).toBe(true);
     const secrets = [".env", ".env.local", ".env.*.local", ".env.dev", ".env.development", ".env.production", ".env.prod", ".env.staging", ".env.test", ".ssh/**", ".aws/credentials", ".npmrc", ".git-credentials", "id_rsa", "id_ed25519", "*.pem", "*.key"];
     expect(permissions.deny).toEqual(["Read", "Edit"].flatMap((tool) => secrets.map((secret) => `${tool}(//**/${secret})`)));
-    expect(warnings.join("\n")).toMatch(/bypassPermissions/);
+    expect(warnings.join("\n")).toMatch(/auto mode/);
   });
 
   it("ningún deny fresco alcanza .env.example: Claude no admite excepciones posteriores", () => {
