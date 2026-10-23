@@ -2,7 +2,7 @@
 
 ## Política
 
-- Trabajo ordinario sin prompts de aprobación: lectura, edición, shell, red y herramientas.
+- Trabajo ordinario sin prompts de aprobación (Claude, en modo automático, los pide tras bloqueos repetidos): lectura, edición, shell, red y herramientas.
 - Únicos denies de Stack: lectura y edición de rutas de secretos.
 - Los subagentes lectores conservan sus restricciones de rol. La política no autoriza merges, publicaciones ni ampliar el encargo.
 - No es un sandbox: un proceso arbitrario puede leer lo que las reglas de herramientas no ven, y el agente puede editar su propio archivo de política, que dejaría de aplicarse en la sesión siguiente. Cero credenciales en ejemplos, fixtures y logs.
@@ -46,7 +46,7 @@ La alternativa es quitar esa línea `deny` del perfil en `config.toml`, tras un 
 - Se siembra solo en configuración ausente o vacía, con aviso.
 - Una configuración existente no se reescribe: en Claude y Pi se conserva byte a byte. Si difiere del default se avisa sin volcar contenido; Stack no ofrece reemplazo: edítala a mano después de un backup.
 - Pi: la política se crea solo si el archivo no existe. Una instalación que no la tenga pasa del default del proveedor (preguntar) a `yoloMode` la próxima vez que se aplique la configuración.
-- Desinstalar no retira los permisos sembrados en ningún runtime: el modo sin prompts de Claude, el perfil de Codex y la política de Pi permanecen hasta que se editen a mano.
+- Desinstalar no retira los permisos sembrados en ningún runtime: el modo automático de Claude, el perfil de Codex y la política de Pi permanecen hasta que se editen a mano.
 - Configuración inválida, ilegible o en conflicto bloquea la unidad. [Retirada](../../README.md#preservation-and-removal).
 
 ## Roles
