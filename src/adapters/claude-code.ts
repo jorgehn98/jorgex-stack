@@ -121,7 +121,7 @@ function planClaudePermissions(ctx: InstallContext): FileAction[] {
       if (defaults !== undefined) {
         content = upsertJson(content, (root) => { Object.assign(root, defaults); });
         ctx.warnings.push(
-          "Claude Code: fresh config starts in bypassPermissions with the danger prompt pre-accepted; only secret paths are denied for Read/Edit and recognized shell file commands. Arbitrary subprocesses are not covered: this is not a sandbox.",
+          "Claude Code: fresh config starts in auto mode (a classifier reviews each tool call); only secret paths are denied for Read/Edit and recognized shell file commands. Arbitrary subprocesses are not covered: this is not a sandbox.",
         );
       }
     } else if (canonicalPermissions !== undefined) {

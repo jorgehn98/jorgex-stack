@@ -2,7 +2,7 @@
 
 ## Política
 
-- Trabajo ordinario sin prompts de aprobación: lectura, edición, shell, red y herramientas.
+- Trabajo ordinario sin prompts de aprobación (Claude, en modo automático, los pide tras bloqueos repetidos): lectura, edición, shell, red y herramientas.
 - Únicos denies de Stack: lectura y edición de rutas de secretos.
 - Los subagentes lectores conservan sus restricciones de rol. La política no autoriza merges, publicaciones ni ampliar el encargo.
 - No es un sandbox: un proceso arbitrario puede leer lo que las reglas de herramientas no ven, y el agente puede editar su propio archivo de política, que dejaría de aplicarse en la sesión siguiente. Cero credenciales en ejemplos, fixtures y logs.
@@ -22,7 +22,7 @@ Esta lista aplica a Claude, OpenCode y Pi; Codex es la excepción descrita abajo
 
 | Runtime | Configuración fresh | Alcance del deny | Límite |
 |---|---|---|---|
-| Claude Code | `defaultMode: bypassPermissions`, aviso de modo peligroso preaceptado, `deny` de `Read`/`Edit` | Tools de archivo y comandos de shell reconocidos (`cat`, `head`, `tail`, `sed`, `tee`, redirecciones) | Deny gana siempre y no admite excepción: las variantes de `.env` se enumeran en vez de usar `.env.*`. [Límites](claude-code-limits.md) |
+| Claude Code | `defaultMode: auto` (un clasificador revisa cada llamada a herramienta), `deny` de `Read`/`Edit` | Tools de archivo y comandos de shell reconocidos (`cat`, `head`, `tail`, `sed`, `tee`, redirecciones) | Deny gana siempre y no admite excepción: las variantes de `.env` se enumeran en vez de usar `.env.*`. [Límites](claude-code-limits.md) |
 | Codex | `approval_policy = "never"` y perfil `jorgex-yolo`: lectura global, escritura en HOME y workspace, red activa, deny de `~/.ssh` y `~/.aws` (se crean vacíos si faltan) | Sandbox del proveedor: cubre cualquier comando | **No protege `.env`, `.npmrc` ni claves sueltas.** No es bypass: fuera de HOME y de los temporales que abre el propio sandbox no escribe |
 | OpenCode v2 | `external_directory` permitido, `read`/`edit` denegados sobre secretos, cliente `autoaccept` | Tools `read` y `edit` | Shell no pasa por estas reglas. El adapter exige major 2 |
 | Pi | `yoloMode: true`, `*` y `bash` permitidos, `path` denegado sobre secretos | Todas las tools y rutas dentro de comandos bash | Depende de que cargue `@gotgenes/pi-permission-system`; que `yoloMode` conserve los deny explícitos está contrastado con la documentación del proveedor en la versión 35.0.2, no con un test propio. Doctor lee el JSON y no certifica enforcement |
@@ -46,7 +46,7 @@ La alternativa es quitar esa línea `deny` del perfil en `config.toml`, tras un 
 - Se siembra solo en configuración ausente o vacía, con aviso.
 - Una configuración existente no se reescribe: en Claude y Pi se conserva byte a byte. Si difiere del default se avisa sin volcar contenido; Stack no ofrece reemplazo: edítala a mano después de un backup.
 - Pi: la política se crea solo si el archivo no existe. Una instalación que no la tenga pasa del default del proveedor (preguntar) a `yoloMode` la próxima vez que se aplique la configuración.
-- Desinstalar no retira los permisos sembrados en ningún runtime: el modo sin prompts de Claude, el perfil de Codex y la política de Pi permanecen hasta que se editen a mano.
+- Desinstalar no retira los permisos sembrados en ningún runtime: el modo automático de Claude, el perfil de Codex y la política de Pi permanecen hasta que se editen a mano.
 - Configuración inválida, ilegible o en conflicto bloquea la unidad. [Retirada](../../README.md#preservation-and-removal).
 
 ## Roles
