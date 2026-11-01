@@ -31,25 +31,11 @@ If the call to action is unclear, a competent execution can still fail the objec
 - If the idea is **known**, clarify what is invariant, what is preserved and what is interpreted; inspect the real references and materials before proposing changes. Detect internal contradictions before treating a direction as approved.
 - If the idea is **open**, the direction phase proposes two or three genuinely distinct options (see [visual direction](visual-direction.md)). Discovery does not need to extract the whole answer first.
 
-Do not invent brand facts, testimonials, metrics or sample data. Hypotheses do not replace facts.
-
-## Brief fields (logical, not a schema)
-
-Collect only what changes decisions:
-
-- subject, audience, primary message/action;
-- deliverable(s) and delivery format(s);
-- desired perception and ambition;
-- existing brand, content and assets;
-- technical, accessibility, performance and delivery constraints;
-- rights and licensing for any reused or generated asset;
-- cost, time and which actions are authorized without asking;
-- success criteria: **at least one creative and one technical**;
-- declared assumptions.
+Do not invent brand facts, testimonials or metrics; hypotheses do not replace facts. Sample details that show a design at real density are a separate case, declared as such: see [good design](good-design.md) §3.
 
 ## Question budget
 
-Use one compact round of only the material unanswered questions, then a second small round only if the answers created new critical uncertainty. There is no minimum count: a sufficient brief needs no interview. If the user delegates the decision, decide and state the assumption. Attach a recommended default to each question so the user can accept them all in one reply.
+The brief fields are in the skill's step 1. Use one compact round of only the material unanswered questions, then a second small round only if the answers created new critical uncertainty. There is no minimum count: a sufficient brief needs no interview. If the user delegates the decision, decide and state the assumption. Attach a recommended default to each question so the user can accept them all in one reply.
 
 When the user does not know, do not answer with more abstract questions; offer two or three concrete choices with their implications (for example, restrained vs expressive, precise vs organic, editorial vs product-led).
 

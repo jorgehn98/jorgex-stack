@@ -1,0 +1,59 @@
+{
+  "skill_name": "visual-director",
+  "note": "Casos de propuesta para good-design, imagery y product-ui; no se cargan por defecto.",
+  "evals": [
+    {
+      "id": 16,
+      "name": "marca-con-mono-y-bordes",
+      "prompt": "Usa la skill de dirección visual que te he indicado. Rediseña la portada de nuestro estudio de software. Nuestra marca, ya aprobada, usa JetBrains Mono en etiquetas y numeración, bordes de 1 px y sombras contenidas. Hemos leído que la mono, la numeración y las líneas finas delatan a la IA: ¿las quitamos? Solo quiero la propuesta, no escribas código.",
+      "expected_output": "Mantiene la marca: los tells son algo que justificar y la marca los ampara. No trata la lista como prohibición, propone direcciones desde el sujeto y no cambia mensaje ni promesas de la página.",
+      "files": [],
+      "assertions": [
+        "No recomienda quitar la mono, la numeración ni los bordes de 1 px por ser tells; explica que la marca aprobada los justifica.",
+        "Las direcciones parten de cosas propias de este estudio o declara qué dato falta para concretarlas, en vez de una idea válida para cualquier competidor.",
+        "Aplica o menciona el test del competidor sobre la idea recomendada.",
+        "Las opciones proceden de composiciones realmente distintas, no de variantes de color."
+      ]
+    },
+    {
+      "id": 17,
+      "name": "restaurante-sin-fotos",
+      "prompt": "Usa la skill de dirección visual que te he indicado. Web para Casa Abril, un restaurante de 28 plazas en la calle del Ancla de Cádiz, abierto solo de marzo a octubre. No tenemos ni una foto y no hay herramienta de generación autorizada. Tampoco tenemos reseñas. Dame la dirección recomendada y de dónde saldrían las imágenes.",
+      "expected_output": "Inventario del sujeto usando calle, plazas y temporada; idea que no sirve para otro restaurante; imágenes de archivos abiertos honestas o dibujadas, con licencia y crédito, sin hacerlas pasar por el local; sin reseñas inventadas.",
+      "files": [],
+      "assertions": [
+        "La idea recomendada usa algo propio del cliente (la calle, las 28 plazas o el cierre de invierno), comprueba lo que no consta en el brief y pasaría el test del competidor.",
+        "Propone imágenes de colecciones abiertas o dibujadas y no presenta ninguna imagen encontrada como el local, los platos o el equipo.",
+        "Indica comprobar licencia y registrar la fuente de cada imagen.",
+        "No inventa reseñas ni cifras; los datos de muestra se declaran como tales.",
+        "No afirma haber buscado o inspeccionado imágenes que no ha visto."
+      ]
+    },
+    {
+      "id": 18,
+      "name": "dashboard-envios",
+      "prompt": "Usa la skill de dirección visual que te he indicado. Pantalla principal de un panel para el responsable de almacén de Rutalia, que entra varias veces al día para saber qué envíos van con retraso. El diseño actual tiene saludo con emoji, cuatro KPI con icono, sparkline en cada uno y paginación bajo diez filas. Propón cómo replantearla; sin código.",
+      "expected_output": "Trata la pantalla como UI de producto: una pregunta, un hallazgo junto a su acción, datos coherentes y sin momento de firma; identifica los tells actuales y da estados.",
+      "files": [],
+      "assertions": [
+        "Formula la pregunta de la pantalla y coloca el hallazgo (los envíos con retraso) con la acción que lo resuelve.",
+        "Señala como generados el saludo con emoji, los KPI con icono y las sparklines, y propone alternativas concretas.",
+        "No añade narrativa de scroll, momento de firma ni efectos de página de marketing.",
+        "Cubre estados vacío, de carga y de error dentro de la pantalla.",
+        "Mantiene la vista general sin paginación, con un límite de filas y acceso a la lista completa."
+      ]
+    },
+    {
+      "id": 19,
+      "name": "critica-sin-render",
+      "prompt": "Usa la skill de dirección visual que te he indicado. Te paso el HTML de nuestra landing: dime si está bien de diseño y si pasa la revisión. No tengo capturas ni URL, y en este entorno no puedes abrir un navegador.",
+      "expected_output": "No da la revisión por pasada: leer el código no es una pasada visual. Separa lo comprobable en el código de lo pendiente y dice qué necesita para mirar el render.",
+      "files": [],
+      "assertions": [
+        "Marca la revisión visual como pendiente, indicando que no pudo ver el render.",
+        "No asigna una nota ni afirma que el diseño sea premium o correcto sin haberlo visto.",
+        "Pide capturas o una URL a varios anchos, o explica qué comprobaría al verlo."
+      ]
+    }
+  ]
+}

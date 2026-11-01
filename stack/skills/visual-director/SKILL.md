@@ -3,7 +3,7 @@ name: visual-director
 description: "Manual visual direction for premium websites and interfaces, audiovisual pieces, and fixed graphics. Use only when the user explicitly invokes visual-director or Visual Director; do not load automatically for ordinary styling, buttons, forms, or bug fixes. Turns a brief into visual directions, a coherent visual system, a minimum sufficient production method, and a defining prototype."
 compatibility: "For coding agents with project/file access. No external tool, framework, design service, browser tool, or rendering engine is mandatory: check what is already available and request authorized setup only when a real need requires it. Verify current official documentation and runtime support before committing to a technology."
 metadata:
-  version: "2.0.2-draft"
+  version: "2.1.0-draft"
   opencode/autoinvoke: false
 ---
 
@@ -27,9 +27,14 @@ Classify the request (`NEW` / `REDESIGN` / `CONTINUATION` / `EDIT`), identify th
 | --- | --- |
 | [discovery](references/discovery.md) | Material gaps remain after inspecting the brief and existing project records. |
 | [visual direction](references/visual-direction.md) | Creating, continuing or substantially changing the creative direction. |
+| [good design](references/good-design.md) | Creating a direction, testing it for genericity, or a result reads as templated: subject inventory, idea sentence, generic tells. |
+| [composition families](references/composition-families.md) | Proposing open directions and needing real distance between them. |
 | [design system](references/design-system.md) | Defining or refining palette, type, layout, material and motion tokens. |
 | [design record](references/design-record.md) | A reusable visual record is needed, or an existing one such as DESIGN.md must be reused. |
-| [frontend routing](references/frontend-routing.md) | The deliverable is a web page, interface, product UI or interactive experience. |
+| [frontend routing](references/frontend-routing.md) | Choosing technology or building a web page, interface, product UI or interactive experience. |
+| [web craft](references/web-craft.md) | Composing or building a marketing or expressive page: first screen, frame, sections, phone, typesetting, motion implementation, scroll scenes. |
+| [product UI](references/product-ui.md) | The screen is worked in (dashboard, admin, settings, tables, forms), or a page shows real fragments of a product. |
+| [imagery](references/imagery.md) | Choosing, finding, licensing, placing or treating pictures, including when no assets exist. |
 | [video routing](references/video-routing.md) | The deliverable is audiovisual: programmatic, recorded, edited, or a mix. |
 | [graphic routing](references/graphic-routing.md) | The deliverable is fixed: poster, banner, thumbnail, illustration or slide. |
 | [explanatory figures](references/explanatory-figures.md) | A hard idea must be explained with a crafted, often interactive illustration (physical metaphor, live readout). |
@@ -71,9 +76,9 @@ Marketing, demo, tutorial, story and editorial have different jobs: establish wh
 ## 2. Explore or continue the direction
 
 - **Known idea**: clarify invariants, inspect the real references and materials, and refine without reinventing the concept.
-- **Open idea**: propose two or three genuinely distinct, subject-specific directions; recommend one with concrete tradeoffs. Avoid cosmetic variants of the same template, and do not force the user to supply all the creativity.
+- **Open idea**: propose two or three genuinely distinct, subject-specific directions; recommend one with concrete tradeoffs. Avoid cosmetic variants of the same template, and do not force the user to supply all the creativity. Start from the subject inventory and idea in [good design](references/good-design.md); generic patterns are prompts to justify, never automatic failures, and the brand wins.
 
-Each direction states the central visual idea tied to the subject, palette, typography, composition, imagery/material, motion/camera language with intentional stillness, one defining moment, and the minimum candidate method with its main tradeoff. When a direction is already approved or the brand fixes it, develop it without reopening the choice. See [visual direction](references/visual-direction.md).
+When a direction is already approved, develop it without reopening the choice. A brand fixes the visual system, not necessarily the composition: if the composition is open, still offer distinct options inside the brand. What each option states is in [visual direction](references/visual-direction.md).
 
 Do not promise asset fidelity, export capability or a working interaction before inspecting the assets and checking the tools.
 
@@ -89,7 +94,6 @@ Use the existing application stack, then select each tool for a concrete job. Co
 
 - Start web work with composition, typography, CSS and SVG; escalate to animation libraries, Canvas or 3D only for a requirement those layers cannot express well.
 - For video, decide the production **method first** (programmatic generation, recorded/edited footage, 3D, generative or a mix), then the runtime; see [video routing](references/video-routing.md).
-- Keep animation ownership clear: one engine per property and one primary render clock. Add methods by scene or asset, not by piling engines on the same property.
 - For 3D, build fidelity only where the idea needs it: previz/blocking/camera, then a proxy or reference, then compatible generation control where the interface accepts it. Do not promise exact geometry or cross-clip identity, and bring in a complex renderer only when its role justifies the cost.
 - If a tool is unavailable, offer a concrete fallback without silently installing or replacing the stack. Installation, connection and authentication are not the same as permission to spend, upload or publish.
 
@@ -108,7 +112,7 @@ Prototype the riskiest, most characteristic part where it answers a real questio
 
 Produce autonomously within the approved scope. Then:
 
-- Inspect the **actual** output in every available modality: render frames and full playback (with audio when present), loaded pages at representative sizes, inspected files.
+- Inspect the **actual** output in every available modality: render frames and full playback (with audio when present), loaded pages at representative sizes, inspected files. How to look is in [quality bar](references/quality-bar.md).
 - Evaluate on two axes: **creative** against the brief and **technical** (viability, performance, accessibility, compatibility, export).
 - Correct the **cause**, not the symptom; re-check only the changed areas and their dependent parts; persist a checkpoint.
 - Bound cost, time and retries by project rules or the user's choice; there is no prescribed fixed number of reviews.
