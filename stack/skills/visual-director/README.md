@@ -40,7 +40,7 @@ El dossier de investigación está en `docs/research/visual-director/`; su `READ
 | [`evals/good-design.json`](evals/good-design.json) | 4 casos de propuesta (`marca-con-mono-y-bordes`, `restaurante-sin-fotos`, `dashboard-envios`, `critica-sin-render`); no se carga por defecto. |
 | [`references/`](references) | 19 referencias operativas por decisión. |
 
-El manifiesto raíz es `SKILL.md`. Las guías bajo [`references/`](references) se abren solo cuando la decisión lo pide (ver tabla en `SKILL.md`); los casos viven en [`evals/evals.json`](evals/evals.json) (4 casos V2), [`evals/audiovisual.json`](evals/audiovisual.json) (3 casos ronda 4) y [`evals/bliss.json`](evals/bliss.json) (*fixture* congelado, [`evals/good-design.json`](evals/good-design.json) (4 casos de buen diseño)), y las plantillas en [`assets/`](assets). No se publica un conteo global de archivos porque puede quedarse obsoleto.
+El manifiesto raíz es `SKILL.md`. Las guías bajo [`references/`](references) se abren solo cuando la decisión lo pide (ver tabla en `SKILL.md`); los casos viven en [`evals/evals.json`](evals/evals.json) (4 casos V2), [`evals/audiovisual.json`](evals/audiovisual.json) (3 casos ronda 4), [`evals/bliss.json`](evals/bliss.json) (*fixture* congelado) y [`evals/good-design.json`](evals/good-design.json) (4 casos de buen diseño), y las plantillas en [`assets/`](assets). No se publica un conteo global de archivos porque puede quedarse obsoleto.
 
 ## Flujo operativo (resumen)
 
