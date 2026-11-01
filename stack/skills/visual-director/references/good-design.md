@@ -32,11 +32,11 @@ Places to look for the first blank: what it produces, its object or silhouette, 
 
 ## 3. Substance
 
-Restraint without content reads as unfinished. In the blind tests behind this guidance, a richer piece with template devices beat a cleaner, thinner one, and the most punished page was so quiet it read as empty.
+Restraint without content reads as unfinished. In the blind tests behind this guidance, a richer piece with template devices beat a cleaner, thinner one, and a page so quiet it read as empty was punished.
 
 - Fill space with scale, full content, a picture made for this subject or a committed field of colour, never with another ornament.
 - Deliver every section the brief asks for, completely and at a readable size: the whole menu with prices, each room with its details, every speaker.
-- Design at real density. Sample details (dish names, room rates) are fine where the brief leaves gaps; list them for confirmation. Sample details are not proof: customers, quotes, reviews, press, logos and business figures are never invented. Leave a visible neutral marker such as "—" where a real number is missing.
+- Design at real density. Sample details (dish names, room names and rates) are fine where the brief leaves gaps, declared as samples and listed for confirmation before launch. Proof is different: customers, quotes, reviews, press, logos and performance or business claims are never invented. Leave a visible neutral marker such as "—" where such a figure is missing.
 - Words: on a conversion page they belong to `landing-launch`, whose copywriting reference owns the "sounds like AI" patterns. Elsewhere, apply the swap test: could another company print this sentence unchanged?
 
 ## 4. Placed space or hole
@@ -51,13 +51,13 @@ A tell is a device produced by default, without a reason. It is a prompt to just
 
 Tells expire. Every published "use this instead" list has become the next wave, so replacements here are procedures (derive from the subject, choose a [composition family](composition-families.md)), never a named font, colour or component. Re-date this registry when you revise it.
 
-**First wave (2023-2024).** Violet or indigo gradients on hero, buttons and glows; gradient-filled headlines; glass panels as a substitute for concept; glowing buttons; a soft grey shadow under every card; three identical cards with an icon in a rounded square; emoji as icons or bullets; centred headline, subtitle, two buttons and a screenshot below; the same default typeface on every page.
+**First wave (2023-2024).** Violet or indigo gradients on hero, buttons and glows; gradient-filled headlines; glass panels as a substitute for concept; decorative gradient blobs; effect-driven 3D; glowing buttons; a soft grey shadow under every card; three identical cards with an icon in a rounded square; emoji as icons or bullets; centred headline, subtitle, two buttons and a screenshot below; the same default typeface on every page.
 
 **Second wave (2025).** A tiny tracked-caps eyebrow above every heading (more than one per three sections needs a reason); a pill badge above the hero; one headline word styled differently; bento grids of rounded tiles; near-black with one neon or acid accent and a glow; floating blurred pill navigation; decorative status dots ("Available for work"); fade-and-rise on every section.
 
 **Third wave (2025-2026), the remedy that became the look.** "Warm it up and make it editorial": cream ground with terracotta or rust; high-contrast serif as a shortcut to "premium"; oversized italic serif headlines; broadsheet cosplay on subjects that are not news; performative labels ("Field notes", "Quietly trusted by"). Warmth can come instead from a low-chroma stone, a deep ink, a photograph or one full warm field.
 
-**Gallery costume.** Monospace micro-labels as a "technical" voice, 01/02/03 index numbering, ruled grids, design-tool chrome as ornament (crosshairs, crop marks, handles), agency micro-meta (local time, coordinates, version stamps, "Scroll"), tiny tracked captions scattered around the viewport. These are common on award sites, and generators copy them first. A brand can own them, and then they stay, used where they carry meaning; without brand or meaning they are costume that only signals "designed". Mono labels and numbering are more common on the study's top sites (table below), so the suspicion here is judgement about defaults, not a measured defect.
+**Gallery costume.** Monospace micro-labels as a "technical" voice, 01/02/03 index numbering, ruled grids, design-tool chrome as ornament (crosshairs, crop marks, handles), agency micro-meta (local time, coordinates, version stamps, "Scroll"), arrows on every link, tiny tracked captions scattered around the viewport. These are common on award sites, and generators copy them first. A brand can own them, and then they stay, used where they carry meaning; without brand or meaning they are costume that only signals "designed". Mono labels and numbering are more common on the study's top sites (table below), so the suspicion here is judgement about defaults, not a measured defect.
 
 **Structure.**
 - A full sentence set at display size over three or four lines.
@@ -81,7 +81,7 @@ The remedies live in [motion graphics](motion-graphics.md).
 
 ## 6. What the evidence supports
 
-Figures come from a 2026 study of about 247 One Page Love and Awwwards sites, scored by model reviewers from screenshots with roughly half a point of noise. It measures gallery fashion as much as quality, associations are not causes, and the study's own skill never beat a no-skill baseline on average score. Use the figures to calibrate suspicion, not as rules. A small tracked-caps mono label falls in two rows with opposite signals: the data points at tiny tracked text, not at the typeface.
+The table comes from a 2026 study of about 247 One Page Love and Awwwards sites, scored by model reviewers from screenshots; other figures in these references also draw on a later study of about 100 Awwwards Sites of the Day. Their test rounds carried about half a point of noise. Both measure gallery fashion as much as quality, associations are not causes, and the skill built on them never beat a no-skill baseline on average score. Use the figures to calibrate suspicion, not as rules. A small tracked-caps mono label falls in two rows with opposite signals: the data points at tiny tracked text, not at the typeface.
 
 | Device | Sites scored 7.5+ | Sites under 6.5 |
 | --- | --- | --- |

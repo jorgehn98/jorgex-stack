@@ -37,7 +37,7 @@ Judge the picture, not the code: you wrote the code, so you will read your inten
 4. **Edges.** Count the distinct left edges of text. Two or three reused on purpose is composed; six means things were placed one at a time.
 5. **Space.** Are related things close and unrelated far? Is each gap a rest or a [hole](good-design.md)? Do the margins match?
 6. **Type.** Is the jump from body to headline decisive? Are there too many close sizes, orphan words, bad line breaks, display tracking so tight the letters touch, or headings nearly as large as the hero?
-7. **Colour.** Name the proportions. An accent in ten places means nothing.
+7. **Colour.** Name the proportions. An accent everywhere means nothing.
 8. **Images.** Is each doing a job? Do the crops and light belong together, or is it a stock mix?
 9. **Sameness.** Write one word for each section or scene's layout. The same word three times is the template showing.
 10. **Narrow viewport.** Is it a composition of its own, or the wide one squeezed?
@@ -53,7 +53,9 @@ Judge the picture, not the code: you wrote the code, so you will read your inten
 
 Responsive from narrow mobile to the intended desktop range; visible keyboard focus; reduced-motion behavior designed; intentional loading states; no content inaccessible because Canvas/WebGL fails; animation does not destroy scroll/input responsiveness; 3D/media lazy-loads; text reflow and real data lengths do not break the composition; key breakpoints visually inspected where tooling allows.
 
-Objective defects to look for at about 1440, 768 and 390 px, on the production build rather than only a dev server (minifiers change what ships):
+Look at about 1440, 768 and 390 px, on the production build rather than only a dev server (minifiers change what ships).
+
+Defects on any web surface, product UI included:
 
 | Defect | How to find it |
 | --- | --- |
@@ -62,15 +64,21 @@ Objective defects to look for at about 1440, 768 and 390 px, on the production b
 | Covered text | Large text hidden by another element at any scroll position, above all with pins and fixed navigation |
 | Clipped text | Ascenders or descenders cut by their box, often from tight leading or line masks |
 | Contrast | Body 4.5:1, large text 3:1, on flat ground; over photos or video, check each frame |
-| Text too small | Reading text under about 13 px (11 px in dense product UI); body well under 16 px |
+| Text too small | Reading text under about 13 px (11 px in dense product UI) |
+| Font not loaded | Declared family rendering in its fallback, so the screenshots are not the design |
+| Reveal never fired | A blank band or hidden content, also checked under reduced motion |
+
+On marketing and expressive pages, also look for the following. A brand or a chosen [composition family](composition-families.md) can break them on purpose, if the reason is stated and the first screen still says what this is. Product screens use the bar in [product UI](product-ui.md) instead.
+
+| Problem | How to find it |
+| --- | --- |
 | Empty first paint | The headline is not legible in about the first second; a preloader or gate |
-| Blank band | A stretch with nothing in it over about half a screen; a reveal that never fired, also checked under reduced motion |
+| Blank stretch | Nothing at all over about half a screen |
 | Unequal frame | Left and right margins differ; header on another inset; text within about 16 px of the edge (12 px on a phone) |
 | Empty half | A text section leaving one half or the middle third with nothing |
 | No title | No visible `h1` on the first screen, several `h1`, or a bare name that never says what this is; a text section with no heading |
 | No focal point | First screen with neither a large headline nor a picture holding about a third of it |
-| Sliver overflow | A display line starting on the margin and overrunning the far edge by a few pixels |
-| Font not loaded | Declared family rendering in its fallback, so the screenshots are not the design |
+| Sliver overflow | A display line overrunning the far edge by a few pixels |
 | Long pin | The same large text held for three screens or more |
 
 ## Video checks

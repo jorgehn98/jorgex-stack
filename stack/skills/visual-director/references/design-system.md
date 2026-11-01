@@ -30,7 +30,7 @@ Specify actual behavior: family, role, optical size if relevant, weight range, w
 Starting numbers, which a brand system overrides:
 
 - **Scale:** on expressive work, two or three sizes do the visible work and five is a sensible ceiling, far apart rather than a graded ladder; display at about four times the body or more on desktop. Product UI needs more steps (about six). No more than three sizes above the fold. If two sizes look alike, make them the same.
-- **Text:** lines of about 45-75 characters, leading of about 1.45-1.6, no justified body text on the web, no centred paragraph over three lines. Secondary text is the same face in a softer ink, not thinner or under about 13 px.
+- **Text:** lines of about 45-75 characters, leading of about 1.45-1.6, no justified body text on the web, no centred paragraph over three lines. Secondary text is the same face in a softer ink, not thinner or under about 13 px (product UI has its own floor).
 - **Display:** tracking tighter as the size grows (about -0.02 to -0.05 em) and leading of about 0.85-1.05. All caps take about +0.06 to +0.1 em at text size and 0 to +0.03 em at display size.
 
 Hierarchy comes from several vectors working together (scale, weight, space, tracking, alignment), not from size alone. Web typesetting details are in [web craft](web-craft.md).

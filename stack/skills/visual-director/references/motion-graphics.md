@@ -39,7 +39,7 @@ Do not add an engine that duplicates one already serving the project. Keep one o
 
 ## Before animating
 
-Ask how often it will be seen: once per visit can take its time, many times per visit stays fast and small, hundreds of times gets no animation. Then name the job above. "It looks nice" is valid only for the signature moment.
+Ask how often it will be seen: once per visit can take its time, many times per visit stays fast and small, and actions repeated all day get no animation. Then name the job above. "It looks nice" is valid only for the signature moment.
 
 ## Easing and timing
 
@@ -80,4 +80,4 @@ For video, sound shapes motion timing: music establishes macro rhythm, SFX sell 
 
 ## Reduced motion for web
 
-When users request reduced motion: remove or flatten large parallax/camera moves; replace zoom/scale travel with opacity or immediate state changes where appropriate; preserve state feedback and hierarchy; keep essential explanatory transitions if they remain comfortable, simplifying them. Keep opacity and colour; drop travel, scale, parallax and autoplay. The reduced state is the finished state: it must look designed, not merely disabled. Only 35 of 99 studied award sites had any rule at all, so do not take examples as permission.
+When users request reduced motion: remove or flatten large parallax/camera moves; replace zoom/scale travel with opacity or immediate state changes where appropriate; preserve state feedback and hierarchy; keep essential explanatory transitions if they remain comfortable, simplifying them. Nonessential motion keeps its opacity and colour changes and loses travel, scale, parallax and autoplay. The reduced state is the finished state: it must look designed, not merely disabled. Only 35 of 99 studied award sites had any rule at all, so do not take examples as permission.

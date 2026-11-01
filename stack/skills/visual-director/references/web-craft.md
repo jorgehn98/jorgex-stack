@@ -2,7 +2,7 @@
 
 Concrete craft for marketing and expressive pages, once the direction and system exist. Technology choice stays in [frontend routing](frontend-routing.md), system values in [design system](design-system.md), product screens in [product UI](product-ui.md).
 
-Numbers are starting points from a gallery study (see [good design](good-design.md) §6). Brand and brief override them. Some of the strongest sites break usability on purpose; do not copy their preloaders, gates, tiny text or hidden navigation.
+Numbers are starting points from gallery studies (see [good design](good-design.md) §6). Brand and brief override them. Some of the strongest sites break usability on purpose; do not copy their preloaders, gates, tiny text or hidden navigation.
 
 ## The first screen
 
@@ -29,14 +29,14 @@ Author the break where it matters, set `max-width` in `ch`, add `text-wrap: bala
 
 - Equal left and right margins at every width. Navigation uses the same inset as the content; a header on a different inset is the commonest small failure.
 - Asymmetry lives inside the frame, never in it. A bleed starts from the margin and does not move it.
-- Choose an anchor line and reuse it (headline, price, footer links): two or three left edges per page. Six means nothing was decided. Centring is a decision: one axis, generous flanks, one element per screen.
+- Choose an anchor line and reuse it (headline, price, footer links): two or three left edges per page. Centring is a decision: one axis, generous flanks, one element per screen.
 - Keep more distance between sections than inside them: about 120-240 px on desktop and 72-112 px on a phone.
 - `min-height: 100vh` is only for sections that fill the screen. Prefer `svh` or `dvh`. For holes, see [good design](good-design.md) §4.
 
 ## Sections
 
 - The order of the argument is the order of the page. List each section as a claim with its proof; a section with no claim is filler. On a conversion page this belongs to `landing-launch`.
-- Neighbouring sections do not share a layout. Write one word per section (split, list, full-bleed, statement); the same word three times is the template showing. A repeated module is only for archives: work, menu, agenda.
+- Neighbouring sections do not share a layout. A repeated module is only for archives: work, menu, agenda.
 - Keep the idea to the last pixel: if the page is a menu, its prices are menu lines. Break the system once, on purpose.
 - Sections with running text open with a heading that names them. Short pages are fine.
 - The footer is a designed close, not a sitemap.
@@ -59,7 +59,7 @@ Scale, tracking and measure are in [design system](design-system.md). On the web
 - Optical alignment: round or diagonal initials (O, C, A, T, W) look indented, so pull large headlines about 0.04-0.06 em left.
 - Under about 1.0 leading, check that descenders and ascenders do not collide.
 - Do not change weight on hover (it reflows). Style `:focus-visible` and `::selection`.
-- Load only the weights used, with a fallback of the same class, and confirm the face really loaded. Otherwise the screenshots you are judging are not the design.
+- Load only the weights used, with a fallback of the same class, and confirm the face really loaded.
 
 ## Motion implementation
 
@@ -86,5 +86,5 @@ A scene is a tall section with a `position: sticky` stage and a timeline tied to
 - **Fill it from the subject:** pictures from one family, phrases of 4-12 words, one at a time. If it could show anything, it is a gimmick. If pictures are missing, do not pad.
 - **Legible at progress 0:** title, phrase and action are there from the first frame, with a real section heading.
 - **A finished still** is what reduced motion, a script failure and some phones see. Each scene has a phone plan: the same with other numbers, a simpler version, or the rest state.
-- **Costs:** pinned pages ran twice as long with fewer words per screen. Scroll hijacking lowered usability. A held sequence of more than two steps needs a plain count ("2 of 4"), and inactive items stay at 40% opacity or more, since 10-15% read as text that vanished. Put a quiet section between two scenes.
+- **Costs:** pinned pages ran twice as long with fewer words per screen. Scroll hijacking was associated with lower usability scores. A held sequence of more than two steps needs a plain count ("2 of 4"), and inactive items stay at 40% opacity or more, since 10-15% read as text that vanished. Put a quiet section between two scenes.
 - **Check** contact frames at 0, 10 … 100% of the hold on desktop, phone and reduced motion: is there one clear thing to look at, does the phrase read, does anything jump, blank, clip or cross the text?

@@ -21,7 +21,7 @@ When the idea is open, proactively produce two or three genuinely **distinct** c
 - one defining moment or sequence, if the concept benefits from one;
 - minimum candidate method and its main tradeoff.
 
-Do not offer cosmetic palette variants of the same template, and do not delegate all the creativity to the user: each option must defend why it fits. To force real distance between options, take them from different [composition families](composition-families.md) and rule out those whose needs the project cannot meet. If the user asks only for the recommendation, develop that one and name the rejected options with their reason.
+Do not offer cosmetic palette variants of the same template, and do not delegate all the creativity to the user: each option must defend why it fits. On pages and campaigns, to force real distance between options, take them from different [composition families](composition-families.md) and rule out those whose needs the project cannot meet. If the user asks only for the recommendation, develop that one and name the rejected options with their reason.
 
 ## Make one thing characteristic
 

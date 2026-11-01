@@ -2,7 +2,7 @@
 
 Read when deciding which pictures a piece uses, finding them, or placing and treating them. Generating them is in [generative media](generative-media.md); clearing rights is everyone's job before use.
 
-Numbers below come from a gallery study (see [good design](good-design.md) §6): leanings of current fashion, not laws. Brand and brief override them.
+Numbers below come from gallery studies (see [good design](good-design.md) §6): leanings of current fashion, not laws. Brand and brief override them.
 
 ## Where pictures come from
 
@@ -21,7 +21,7 @@ A found picture shows the world around the client: its city, materials, history,
 
 ## Finding pictures of the subject's world
 
-Openverse, Wikimedia Commons, the Art Institute of Chicago, the Met, the Internet Archive and NASA publish searchable material. Search the [subject inventory](good-design.md), not the category:
+Openverse, Wikimedia Commons, the Art Institute of Chicago, the Met, NASA and the Internet Archive's Prelinger collection publish searchable material. Avoid the rest of the Internet Archive for client work: anyone can upload there and licence claims are unchecked. Search the [subject inventory](good-design.md), not the category:
 
 - Use the place's own words (`azulejo`, not "blue tile") and add a medium or decade: postcard, engraving, old map, lithograph, 1950s.
 - Categories that work: the place, maps, materials up close, the history of the trade, museum objects of the kind, scientific plates.

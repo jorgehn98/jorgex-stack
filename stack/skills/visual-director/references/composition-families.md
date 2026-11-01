@@ -1,6 +1,6 @@
 # Composition families
 
-Twenty ways of composing a page or campaign, for proposing an open direction. A model asked to invent a look picks the category default every time, so use this list to force real distance between options: two directions from the same family are cosmetic variants.
+Twenty ways of composing a page or campaign, for proposing an open direction. A model asked to invent a look picks the category default every time, so use this list to force real distance between options: two directions from the same family are usually cosmetic variants.
 
 This is a prompt for ideation, not a menu. Hold each family against the [subject inventory](good-design.md) and ask which one can carry something only this client has. Rule out any whose needs the project cannot meet. Justify the choice from the brief, combine or leave the list when the subject asks for it, and let the brand system win. The family is a way of composing; it still needs an idea from the subject.
 
