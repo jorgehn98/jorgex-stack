@@ -13,7 +13,7 @@ Index: Input · Decide · Do (1 crawling and indexing, 2 technical and speed, 3 
 - **Non-organic traffic** (ads, email): this phase shrinks to correct indexing or a deliberate `noindex`. Pages duplicated per segment for ads get `noindex` or a canonical to the main page; decide it with the user.
 - **Multilanguage or multiregion**: does the brief flag it? If so, apply block 5.
 - **Local service**: is the page type local service? If so, apply the local business part of block 5.
-- Pages at scale by variants (programmatic SEO) are outside this skill.
+- Pages at scale by variants (programmatic SEO) are outside this skill; to decide or audit them, use `organic-growth`.
 
 ## Do
 Priority: 1) crawling and indexing, 2) technical base and speed, 3) on-page, 4) content quality, 5) authority. What is not indexed does not rank, so do not polish the title of a blocked page.

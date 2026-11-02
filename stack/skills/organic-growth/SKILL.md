@@ -60,6 +60,7 @@ Write findings into that existing place only when the user asks to persist them.
 - `references/diagnosis.md` — what to check on a page that already exists, ordered by how often it is the actual problem.
 - `references/prioritization.md` — the criteria, the ranking and the backlog format.
 - `references/citation-check.md` — how to measure AI citations without inventing a score.
+- `references/programmatic.md` — whether a family of template pages should exist, and how to model, roll out and retire it.
 
 Load the one for the step you are in. Producing a new page without reading `diagnosis.md` is how a site ends up with sixty mediocre pages and one more.
 
