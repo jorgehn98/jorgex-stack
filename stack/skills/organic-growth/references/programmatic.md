@@ -8,9 +8,9 @@ A family multiplies whatever is in its template and its data, including mistakes
 
 All four must hold. If one fails, stop and say which.
 
-- **Intent is evidenced.** Search Console already shows impressions for the pattern, or the query is a question real buyers ask. Volume from a keyword tool is an input, not a reason. A family that "scales with the number of competitors" scales its liabilities too.
+- **Intent is evidenced.** Search Console already shows impressions for the pattern, or the query is a question buyers demonstrably ask: sales or support conversations, forums, questions shown in search results. Volume from a keyword tool is an input, not a reason. A family that "scales with the number of competitors" scales its liabilities too.
 - **Each page has something only it can say.** Write down the fields that differ per page. If removing the swapped name leaves the same page, it is a near-duplicate, whatever the intro says. Data is stronger the harder it is to copy: created by you, derived from your product, contributed by users, licensed, public.
-- **Someone can keep it true.** Estimate pages × volatile facts × review cycle. If nobody will do that work, shrink the family or drop the volatile facts.
+- **Someone can keep it true.** Estimate pages × volatile facts × reviews per year. If nobody will do that work, shrink the family or drop the volatile facts.
 - **It does not compete with a family you already have.** Same intent on two URLs needs distinct roles and a link between them, or one of them goes.
 
 Check Google's current [spam policies](https://developers.google.com/search/docs/essentials/spam-policies) on scaled content and doorway pages before committing to a large family.
@@ -43,15 +43,16 @@ Prose can be corrected one page at a time; a type cannot. Before writing content
 
 ## Reach
 
-A hub linking to its pages is the minimum, not distribution. Link from existing pages that already receive impressions and match the intent; a family nothing else links to stays invisible however complete it is. Regenerate whatever is derived from these pages (sitemap, `llms.txt`, feeds) and include that diff in the review.
+A hub linking to its pages is the minimum, not distribution. Link from existing pages that match the intent, starting with those that already receive impressions; a family nothing else links to stays invisible however complete it is. Regenerate whatever is derived from these pages (sitemap, `llms.txt`, feeds) and include that diff in the review.
 
 ## Roll out in batches
 
 1. Write down beforehand what would make you expand, fix or stop.
-2. Publish the strongest pages first: 20 to 50, or fewer on a small site.
-3. Wait one full reporting window, for example 28 days, and read Search Console per family: indexed pages, impressions, queries, clicks.
-4. Expand only what passed. A defect found now costs a few edits; after the full rollout it costs the whole family.
+2. Propose the first batch: the strongest pages, no more than the team can review, and never more than 20 to 50.
+3. Stop there and report. The result takes weeks to arrive, so propose saving the criteria and the check date in the project's SEO home, or the next pass will judge the batch by criteria invented afterwards.
+4. When the batch has been indexed for one full reporting window, for example 28 days, read Search Console per family: indexed pages, impressions, queries, clicks.
+5. Expand the pattern of the pages that passed and handle the others page by page. A defect found now costs a few edits; after the full rollout it costs the whole family.
 
 ## When a family does not work
 
-No impressions after a full window, on pages that are indexed and linked, means the intent or the page is wrong, and adding pages will not fix it. Consolidate or remove, with redirects, and record the outcome in the backlog's `verified` state.
+No impressions a full window after indexing, on pages linked from outside the family, leaves two causes: the intent or the page is wrong, or the domain lacks the authority to rank yet. Adding pages fixes neither, so stop expanding. Propose consolidating or removing only when the evidence points to intent or page quality; removal needs the user's decision and a redirect wherever an equivalent page exists. Record the outcome in the backlog, failures included, so the next pass does not repeat the bet.

@@ -70,7 +70,7 @@ Before producing anything, confirm:
 
 - **The gap or defect is real**, not assumed: the page does not exist, exists without translation, nothing links to it, or it exists and fails for a stated reason.
 - **The claim is checkable** against the product, the code or a named source. Product limits are stated, not smoothed over — a page that overstates gets contradicted by the product and stops being cited.
-- **Third-party facts come from the third party.** A competitor's pricing or features recorded in the repository is a claim, not a source: it goes stale silently and then gets published as JSON-LD. Check the competitor's own page and record the date you checked. A fetched page is not proof of absence: fetch tools summarize, truncate and miss JavaScript. Before calling a third-party fact false or unpublished, read the raw text or a browser render, and check every plan and billing cycle.
+- **Third-party facts come from the third party.** A competitor's pricing or features recorded in the repository is a claim, not a source: it goes stale silently and then gets published as JSON-LD. Check the competitor's own page and record the date you checked. A fetched page is not proof of absence: fetch tools summarize, truncate and miss JavaScript. Before calling a third-party fact false or unpublished, read the raw text or a browser render, and check every plan and billing cycle. If the content depends on JavaScript and no render is available, report the fact as unverified, never as false.
 - **The URL is new**, or changing a published one comes with a redirect.
 - **The format matches** what the project consumes: MDX, Markdown with frontmatter, typed data files, Astro collections, a CMS API.
 
