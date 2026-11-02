@@ -4,7 +4,7 @@ Ground the aesthetic in the subject before choosing colors, type or effects. Thi
 
 ## One sentence of intent
 
-Write one sentence: *This should feel like **[specific world, material or cultural reference]** because **[reason tied to audience and objective]**.* If it could be reused for five unrelated clients, it is not specific enough.
+Write one sentence: *This should feel like **[specific world, material or cultural reference]** because **[reason tied to audience and objective]**.* If it could be reused for five unrelated clients, it is not specific enough. Then inventory the subject and write the idea sentence in [good design](good-design.md) §1-2: the intent says how it should feel, the idea says what carries it.
 
 ## Known direction: clarify, do not reinvent
 
@@ -21,7 +21,7 @@ When the idea is open, proactively produce two or three genuinely **distinct** c
 - one defining moment or sequence, if the concept benefits from one;
 - minimum candidate method and its main tradeoff.
 
-Do not offer cosmetic palette variants of the same template, and do not delegate all the creativity to the user: each option must defend why it fits.
+Do not offer cosmetic palette variants of the same template, and do not delegate all the creativity to the user: each option must defend why it fits. On pages and campaigns, to force real distance between options, take them from different [composition families](composition-families.md) and rule out those whose needs the project cannot meet. If the user asks only for the recommendation, develop that one and name the rejected options with their reason.
 
 ## Make one thing characteristic
 
@@ -33,7 +33,7 @@ Typography carries personality, not just copy: one family or two with clearly di
 
 ## Avoid generated defaults
 
-Unless the brief calls for them, be suspicious of warm cream plus serif plus terracotta, near-black plus one acid accent, newspaper layouts on unrelated subjects, identical rounded cards, decorative gradient blobs, tracked all-caps eyebrows, monospace-for-technical, arrows on every link, glassmorphism as a substitute for concept, and effect-driven 3D. All of these can be correct; the problem is using them as defaults when the subject does not ask for them.
+The registry of generic tells, why removing them is not enough and what the evidence supports live in [good design](good-design.md). All of them can be correct; the problem is using them as defaults when the subject does not ask for them.
 
 ## Motion is attention management
 
@@ -41,7 +41,7 @@ Non-user-triggered motion should be selective; one orchestrated sequence often r
 
 ## Two passes
 
-**Pass 1 — Direction**: palette, type, composition/layout, shape/material, imagery, motion/camera and one signature moment. **Pass 2 — Genericity critique**: could this plan be pasted into another project unchanged; is a trope used because it is easy for a machine to generate; what is genuinely specific; is the signature moment doing the work; what should be removed. Revise before implementation if it still reads as a template. Name the few defaults this direction deliberately excludes, so production does not drift back to them.
+**Pass 1 — Direction**: palette, type, composition/layout, shape/material, imagery, motion/camera and one signature moment. **Pass 2 — Genericity critique**: apply the competitor test and the tells in [good design](good-design.md); what is genuinely specific; is the signature moment doing the work; what should be removed. Revise before implementation if it still reads as a template. Name the few defaults this direction deliberately excludes, so production does not drift back to them.
 
 ## Copy and references
 

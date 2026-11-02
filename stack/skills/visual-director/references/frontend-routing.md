@@ -1,14 +1,13 @@
 # Frontend and interface routing
 
-Use technology according to the visual job. Preserve the existing application stack unless changing it is part of the brief. Cover both the visual journey and the interface states before adding heavy graphics.
+Use technology according to the visual job. Preserve the existing application stack unless changing it is part of the brief. Cover both the visual journey and the interface states before adding heavy graphics. Page composition and implementation craft are in [web craft](web-craft.md).
 
 ## Marketing page versus product UI
 
 Establish which one this is before applying the rest; they are judged by different bars, and a page can contain both (a landing with an embedded demo).
 
 - **Marketing or expressive page**: the visitor decides and leaves. Judge it by narrative, one defining moment and a clear call to action; "Two speeds" and "Narrative and CRO" below apply.
-- **Product or application UI**: the user returns and works. Judge it by consistency across screens, information density that fits the task, component hierarchy, tables and long forms that stay scannable, persistent navigation and the empty, error and loading states. Impact is not the bar: quiet and predictable is often right, and a signature moment or scroll narrative usually does not belong.
-- Reuse the existing components and tokens of a product before inventing new ones; a new pattern needs a reason the current ones cannot meet.
+- **Product or application UI**: the user returns and works. Judge it by consistency across screens, information density that fits the task, component hierarchy, scannable tables and forms, persistent navigation and its states; see [product UI](product-ui.md). Impact is not the bar: a signature moment or scroll narrative usually does not belong.
 
 ## Two speeds: read vs act
 
@@ -29,7 +28,7 @@ Preserve real, distinct states: loading, empty, no-results, error and success. K
 
 - Preserve keyboard focus: visible focus, logical order, focus return after closing popovers, `Escape` to cancel, no inconsistent tree state.
 - Keep the layout stable under reflow down to the declared narrow width; semantic relationships survive even where the reflow does not cover every exception.
-- Respect `prefers-reduced-motion` per animation, and verify it in the actual integration rather than assuming it is inherited.
+- Verify [reduced motion](motion-graphics.md) per animation in the actual integration rather than assuming it is inherited.
 - Provide a fallback when decorative canvas/3D fails, and design for worst-case content lengths and slow loading. Do not announce every state change; announce only meaningful status messages, without focus.
 - Navigation and back/forward correctness belong to the project's routing plan, not to a component library.
 
@@ -42,11 +41,11 @@ Preserve real, distinct states: loading, empty, no-results, error and success. K
 - **D3**: data-to-visual mapping, scales, axes and chart geometry; pair with the scene-timing owner.
 - **Canvas / PixiJS**: dense 2D, sprites, particles and filters; keep text and semantic UI in the DOM. **Three.js / R3F** only when 3D is conceptually meaningful; see [3D and shaders](3d-shaders.md).
 
-Keep ownership clear: one engine per property and one primary clock. See [motion graphics](motion-graphics.md) for the motion vocabulary and [design system](design-system.md) for tokens.
+See [motion graphics](motion-graphics.md) for the motion vocabulary and [design system](design-system.md) for tokens.
 
 ## Content and media
 
-Use real or specific content, not lorem. Design for worst-case text lengths, missing images and slow networks; media and 3D load lazily and never block core content. A page that only works with the demo data is not finished.
+Use real or specific content, not lorem, and choose pictures through [imagery](imagery.md). Design for worst-case text lengths, missing images and slow networks; media and 3D load lazily and never block core content. A page that only works with the demo data is not finished.
 
 ## Performance and integrity
 

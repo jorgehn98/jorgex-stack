@@ -37,13 +37,17 @@ Define a project-specific vocabulary rather than animating ad hoc: entry/reveal 
 
 Do not add an engine that duplicates one already serving the project. Keep one owner per property and one primary clock.
 
+## Before animating
+
+Ask how often it will be seen: once per visit can take its time, many times per visit stays fast and small, and actions repeated all day get no animation. Then name the job above. "It looks nice" is valid only for the signature moment.
+
 ## Easing and timing
 
 Avoid linear timing for everything; match easing to physical and semantic behavior. UI confirmation should feel quick and decisive; large spatial movement can take longer because the eye must track it. Spring/overshoot implies elasticity or play, not every luxury or enterprise context. Constant speed suits scanners, progress and technical sweeps, not general UI. Treat durations as a system, not isolated guesses, and test at real scale and frame rate.
 
 The transition is the verb and the easing is the adverb: the same slide reads confident, dreamy or playful by curve alone. As a default, decelerating curves (ease-out) suit things entering, accelerating curves (ease-in) things leaving and ease-in-out moves between positions; entrances usually take longer than exits. Speed carries weight: roughly 0.15-0.3 s reads as energy or urgency, 0.3-0.5 s as ordinary content, 0.5-0.8 s as gravity or luxury, and longer as cinematic or atmospheric. These are starting heuristics, not rules.
 
-The tell of generated motion is sameness: one ease on every tween, one 0.4 s duration, the same offset-and-fade entrance from below, the same stagger and an ambient zoom on every scene. Vary them by role, let the slowest scene run several times slower than the fastest, and allow stillness after motion. In timed video, start the first motion a fraction after t=0 (about 0.1-0.3 s) so it does not read as a jump cut.
+The tell of generated motion is sameness; the full list is in [good design](good-design.md). Vary ease, duration and entrance by role, let the slowest scene run several times slower than the fastest, and allow stillness after motion. In timed video, start the first motion a fraction after t=0 (about 0.1-0.3 s) so it does not read as a jump cut.
 
 ## Choreography and transitions
 
@@ -70,10 +74,10 @@ For video, sound shapes motion timing: music establishes macro rhythm, SFX sell 
 ## When not to animate, and hard limits
 
 - Animation helps when the viewer must reorient or follow a change. Research on animated graphics (Tversky et al., 2002) found no reliable comprehension advantage over a well-made static graphic, so do not use motion to teach what a still explains better.
-- Starting ranges for UI: about 100-200 ms for micro feedback, 200-300 ms for entering elements and panels, 300-500 ms for screen-level changes. Actions repeated dozens of times a day, such as keyboard-driven commands, should not animate at all.
+- Starting ranges for UI: about 100-200 ms for micro feedback and hover, 150-300 ms for menus and panels, 250-450 ms for dialogs and screen-level changes, and 500-900 ms for page and hero reveals. Leaving takes about 70% of arriving. Actions repeated dozens of times a day, such as keyboard-driven commands, should not animate at all.
 - WCAG: no more than three flashes in any one second (2.3.1); motion that starts automatically and lasts over 5 s needs a way to pause, stop or hide it (2.2.2). Ambient loops stop when their view unmounts.
 - The View Transitions API does not apply `prefers-reduced-motion` by itself; handle the media query explicitly.
 
 ## Reduced motion for web
 
-When users request reduced motion: remove or flatten large parallax/camera moves; replace zoom/scale travel with opacity or immediate state changes where appropriate; preserve state feedback and hierarchy; keep essential explanatory transitions if they remain comfortable, simplifying them. The reduced version should remain designed, not merely disabled animation.
+When users request reduced motion: remove or flatten large parallax/camera moves; replace zoom/scale travel with opacity or immediate state changes where appropriate; preserve state feedback and hierarchy; keep essential explanatory transitions if they remain comfortable, simplifying them. Nonessential motion keeps its opacity and colour changes and loses travel, scale, parallax and autoplay. The reduced state is the finished state: it must look designed, not merely disabled. Only 35 of 99 studied award sites had any rule at all, so do not take examples as permission.

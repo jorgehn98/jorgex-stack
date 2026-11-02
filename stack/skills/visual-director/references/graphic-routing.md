@@ -8,7 +8,7 @@ Start from the single message and the order in which the eye should move. Then c
 
 - layout and margins by hierarchy and relationship, not uniform scale;
 - typography sized to the real content, with a legible body size, coherent leading and bounded line length;
-- imagery chosen for the subject, with deliberate crop and context.
+- imagery chosen for the subject, with deliberate crop and context (sourcing, licences and treatment are in [imagery](imagery.md)).
 
 Zero in on the **actual viewing size and distance**. A thumbnail is judged small and short, a poster at larger scale, a slide on the destination screen. Verify readability and that the copy is exact — every character, name and figure. A crop must not remove context that changes the meaning or misleads the reader.
 
