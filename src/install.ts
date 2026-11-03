@@ -205,6 +205,25 @@ function engramSetupBackupTargets(id: RuntimeId, configDir: string): string[] {
   return targets;
 }
 
+/**
+ * Files this runtime owns that its plan no longer projects.
+ *
+ * Another runtime's ownership protects a file only outside the shared roots: every runtime
+ * copies the skills from one canon, so a skill file another runtime still lists there is
+ * stale rather than foreign. Protecting it would keep it forever, because each runtime
+ * would defer to the others and none would remove it.
+ */
+export function planOrphanRetirement(input: {
+  owned: readonly string[];
+  planned: readonly string[];
+  ownedByOthers: readonly string[];
+  sharedRoots: readonly string[];
+}): string[] {
+  const planned = new Set(input.planned);
+  const foreign = new Set(input.ownedByOthers.filter((file) => !input.sharedRoots.some((root) => isContainedIn(file, root))));
+  return input.owned.filter((file) => !planned.has(file) && !foreign.has(file));
+}
+
 /** Retire only registrations pointing to script files recorded as ours. Provider hooks are untouched. */
 export function planRetiredHooks(adapter: Adapter, ctx: InstallContext, owned: readonly string[]): FileAction[] {
   const scriptsDir = adapter.paths(ctx.configDir).scriptsDir;
@@ -413,9 +432,17 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         // An existing Stack-owned shared file is a reference, never a claim by equality. An adopted identical file is
         // not written, so its confirmation is recorded here.
         for (const target of ownedCandidates) if ((ctx.ownedFiles?.has(target) || adoptedTargets.has(target)) && !row.owned.includes(target)) row.owned.push(target);
-        const keep = new Set([...plan.map((action) => action.target), ...Object.entries(readManifest(manifestPath).runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? [])]);
-        for (const orphan of [...row.owned]) {
-          if (!includesOwnedFile(adapter, ctx, scope, orphan) || keep.has(orphan) || path.basename(orphan) === "engram.ts") continue;
+        const manifest = readManifest(manifestPath);
+        const retired = planOrphanRetirement({
+          owned: row.owned,
+          planned: plan.map((action) => action.target),
+          ownedByOthers: Object.entries(manifest.runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? []),
+          // Skills come from one canon for every runtime: only the shared copy is protected
+          // by another runtime's ownership, never the private config directories.
+          sharedRoots: [adapter.paths(configDir).skillsDir],
+        });
+        for (const orphan of retired) {
+          if (!includesOwnedFile(adapter, ctx, scope, orphan) || path.basename(orphan) === "engram.ts") continue;
           assertProjectionPath(orphan, opts.targetDir ?? HOME);
           if (fs.lstatSync(orphan, { throwIfNoEntry: false })) { createBackup([orphan], `retired-${id}`, path.join(state, "backups")); fs.unlinkSync(orphan); }
           row.owned = row.owned.filter((file) => file !== orphan);
