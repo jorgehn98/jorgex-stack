@@ -279,7 +279,7 @@ Take it from the transcript, not from the final output. If the runtime exposes n
 
 The step is done when every completed run has both `timing.json` and `path.json`.
 
-**Check variance when the numbers look unstable.** Before improving anything, rerun the same eval two more times and compare the three paths against their assertions. Passing by three different routes means the skill is not holding the process, even when every assertion passes. Save each repeat in `eval-<ID>/variance-<N>/`, outside the benchmark: the aggregator only reads `<config>/run-*`, so repeats kept that way stay diagnostic. The check is finished when each path is recorded and either they match step by step or the divergence is explained — in the skill, if the wording caused it, or in the eval, if the prompt allowed it. This is also the substitute for the baseline when the runtime has no subagents.
+**Check variance when the numbers look unstable.** Before improving anything, rerun the same eval two more times and compare the three paths against their assertions. Passing by three different routes means the skill is not holding the process, even when every assertion passes. Save each repeat in `eval-<ID>/variance-<N>/` with its own `path.json`, and the transcript if the runtime exposes one. The aggregator skips those directories, so repeats stay diagnostic instead of becoming another configuration in the comparison. The check is finished when each path is recorded and either they match step by step or the divergence is explained — in the skill, if the wording caused it, or in the eval, if the prompt allowed it. This is also the substitute for the baseline when the runtime has no subagents.
 
 ### Step 4: Grade, aggregate, and launch the viewer
 
