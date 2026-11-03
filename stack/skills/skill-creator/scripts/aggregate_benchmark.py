@@ -14,15 +14,19 @@ Example:
 
 The script supports two directory layouts:
 
-    Workspace layout (from skill-creator iterations):
+    Workspace layout (from skill-creator iterations). A configuration holds
+    run-N/ subdirectories, or a single grading.json at its root (run 1):
     <benchmark_dir>/
     └── eval-N/
         ├── with_skill/
-        │   ├── run-1/grading.json
+        │   ├── grading.json          (single run)
+        │   ├── run-1/grading.json    (or numbered runs)
         │   └── run-2/grading.json
         └── without_skill/
-            ├── run-1/grading.json
-            └── run-2/grading.json
+            └── grading.json
+
+    Directories named variance-* are skipped: they hold repeats kept for the
+    path comparison, not benchmark configurations.
 
     Legacy layout (with runs/ subdirectory):
     <benchmark_dir>/
@@ -101,7 +105,10 @@ def load_run_results(benchmark_dir: Path) -> dict:
         for config_dir in sorted(eval_dir.iterdir()):
             if not config_dir.is_dir():
                 continue
-            # A config holds run-N/ subdirectories, or a single grading.json at its root
+            # A config holds run-N/ subdirectories, or a single grading.json at its root.
+            # variance-* holds repeats for the path comparison, never a configuration.
+            if config_dir.name.startswith("variance-"):
+                continue
             run_dirs = sorted(config_dir.glob("run-*"))
             if not run_dirs and (config_dir / "grading.json").exists():
                 run_dirs = [config_dir]
@@ -146,11 +153,12 @@ def load_run_results(benchmark_dir: Path) -> dict:
                     try:
                         with open(timing_file) as tf:
                             timing_data = json.load(tf)
+                    except (json.JSONDecodeError, OSError):
+                        timing_data = None
+                    if isinstance(timing_data, dict):
                         if result["time_seconds"] == 0.0:
                             result["time_seconds"] = timing_data.get("total_duration_seconds", 0.0)
                         result["tokens"] = timing_data.get("total_tokens", 0)
-                    except json.JSONDecodeError:
-                        pass
 
                 # Extract metrics if available
                 metrics = grading.get("execution_metrics", {})
