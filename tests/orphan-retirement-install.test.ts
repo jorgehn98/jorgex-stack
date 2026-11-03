@@ -75,6 +75,13 @@ it("retira un archivo compartido que ya no está en el canon aunque otro runtime
 
   const retired = listBackups(path.join(root, ".jorgex-stack", "backups")).find((entry) => entry.id.endsWith("-retired-opencode"));
   expect(retired?.files.map((file) => file.original)).toContain(orphan);
+
+  // The manifest snapshot is taken before the claims are released, so it can restore them.
+  const snapshot = listBackups(path.join(root, ".jorgex-stack", "backups")).find((entry) => entry.id.endsWith("-manifest"));
+  const stored = snapshot?.files[0]?.stored;
+  expect(stored).toBeDefined();
+  const before = JSON.parse(fs.readFileSync(stored!, "utf8"));
+  expect(before.runtimes.codex.owned).toContain(orphan);
 });
 
 it("conserva un archivo de la configuración privada que otro runtime todavía declara", async () => {

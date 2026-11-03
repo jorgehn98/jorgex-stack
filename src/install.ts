@@ -446,13 +446,15 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           assertProjectionPath(orphan, opts.targetDir ?? HOME);
           if (fs.lstatSync(orphan, { throwIfNoEntry: false })) { createBackup([orphan], `retired-${id}`, path.join(state, "backups")); fs.unlinkSync(orphan); }
           row.owned = row.owned.filter((file) => file !== orphan);
+          // Persist first: this is where the manifest snapshot is taken, and it must hold the
+          // claims this pass is about to release.
+          persist();
           // A shared file removed here is gone for the other runtimes too: their claim would
           // make doctor report it missing. Release it the same way uninstall does.
           for (const [runtime, entry] of Object.entries(readManifest(manifestPath).runtimes)) {
             if (runtime === id || !entry?.owned.includes(orphan)) continue;
             writeRuntimeManifest(runtime as RuntimeId, { ...entry, owned: entry.owned.filter((file) => file !== orphan) }, manifestPath);
           }
-          persist();
         }
         persist();
       }
