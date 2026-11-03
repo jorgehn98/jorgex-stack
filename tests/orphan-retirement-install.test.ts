@@ -4,6 +4,7 @@ import * as p from "@clack/prompts";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runInstall, type NativeExecutor } from "../src/install.js";
 import { readManifest } from "../src/lib/manifest.js";
+import { listBackups } from "../src/lib/backup.js";
 import * as detection from "../src/lib/detect.js";
 import { expectedEngramAssetName } from "../src/lib/github.js";
 
@@ -68,7 +69,12 @@ it("retira un archivo compartido que ya no está en el canon aunque otro runtime
   expect(await apply()).toBe(0);
 
   expect(fs.existsSync(orphan)).toBe(false);
-  expect(readManifest(manifestPath()).runtimes.opencode?.owned ?? []).not.toContain(orphan);
+  const manifest = readManifest(manifestPath());
+  expect(manifest.runtimes.opencode?.owned ?? []).not.toContain(orphan);
+  expect(manifest.runtimes.codex?.owned ?? []).not.toContain(orphan);
+
+  const retired = listBackups(path.join(root, ".jorgex-stack", "backups")).find((entry) => entry.id.endsWith("-retired-opencode"));
+  expect(retired?.files.map((file) => file.original)).toContain(orphan);
 });
 
 it("conserva un archivo de la configuración privada que otro runtime todavía declara", async () => {
