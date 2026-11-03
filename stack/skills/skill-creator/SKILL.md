@@ -1,6 +1,7 @@
 ---
 name: skill-creator
 description: Create, edit and evaluate skills for agents. Use when the user wants a new skill, wants an existing one improved or diagnosed, or wants its behaviour tested with test prompts, assertions, benchmarks or run-to-run variance.
+compatibility: "For agents with a filesystem; parallel subagents and a browser when available, with the fallbacks below. Packaging needs Python 3 and PyYAML."
 ---
 
 # Skill Creator
@@ -67,9 +68,10 @@ Based on the user interview, fill in these components:
 
 - **name**: Skill identifier
 - **description**: The branches that should trigger it, plus one clause for when another skill needs it. This is the primary triggering mechanism and it sits in context every turn, so it earns harder pruning than the body: front-load the leading word, keep one trigger per branch — synonyms that rename a single branch are duplication — and do not restate what the body already says. Models tend to "undertrigger" skills, so make the branches concrete and say them directly, but cut everything that is identity rather than a trigger.
-- **invocation**: model-invoked by default, so the agent can reach it on its own and other skills can point at it. Make it user-invoked only when it never fires on its own and the runtime supports it; see Invocation below.
 - **compatibility**: Required tools, dependencies (optional, rarely needed)
 - **the rest of the skill :)**
+
+Decide the invocation mode before writing (see Invocation): it changes what the description has to do. That mechanism is declared in `compatibility`, not in a frontmatter field of its own, because not every runtime supports one.
 
 ### Skill Writing Guide
 
@@ -136,7 +138,7 @@ Use one only when the prior it recruits matches the process you want. A near-syn
 - One meaning, one authoritative place: changing the behaviour is a one-place edit.
 - Check every line for relevance: does it still bear on what the skill does?
 - Run the no-op test per sentence, not per line: does it change behaviour against the default? A line the model already obeys pays load to say nothing. Delete the whole sentence rather than trimming words from it.
-- Prune, then re-run the evaluations. A sentence that looks redundant can be the one holding the hit rate.
+- Prune, then re-run the evaluations once the user has agreed to the run. A sentence that looks redundant can be the one holding the hit rate.
 
 #### Failure Modes
 
@@ -275,7 +277,9 @@ This is the only opportunity to capture this data — it comes through the task 
 
 Take it from the transcript, not from the final output. If the runtime exposes no transcript, say so and record only what you observed.
 
-**Check variance when the numbers look unstable.** Before improving anything, rerun the same eval two more times and compare the three paths against their assertions. Passing by three different routes means the skill is not holding the process, even when every assertion passes. The check is finished when each path is recorded and either they match step by step or the divergence is explained — in the skill, if the wording caused it, or in the eval, if the prompt allowed it. This is also the substitute for the baseline when the runtime has no subagents.
+The step is done when every completed run has both `timing.json` and `path.json`.
+
+**Check variance when the numbers look unstable.** Before improving anything, rerun the same eval two more times and compare the three paths against their assertions. Passing by three different routes means the skill is not holding the process, even when every assertion passes. Save each repeat in `eval-<ID>/variance-<N>/`, outside the benchmark: the aggregator only reads `<config>/run-*`, so repeats kept that way stay diagnostic. The check is finished when each path is recorded and either they match step by step or the divergence is explained — in the skill, if the wording caused it, or in the eval, if the prompt allowed it. This is also the substitute for the baseline when the runtime has no subagents.
 
 ### Step 4: Grade, aggregate, and launch the viewer
 
@@ -290,7 +294,7 @@ Once all runs are done:
    This produces `benchmark.json` and `benchmark.md` with pass_rate, time, and tokens for each configuration, with mean ± stddev and the delta. If generating benchmark.json manually, see `references/schemas.md` for the exact schema the viewer expects.
 Put each with_skill version before its baseline counterpart.
 
-3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs. Compare the paths saved in Step 3.
+3. **Do an analyst pass** — read the benchmark data and surface patterns the aggregate stats might hide. See `agents/analyzer.md` (the "Analyzing Benchmark Results" section) for what to look for — things like assertions that always pass regardless of skill (non-discriminating), high-variance evals (possibly flaky), and time/token tradeoffs. Compare the paths from Step 3 yourself: the analyst reads benchmark data, not run paths.
 
 4. **Launch the viewer** with both qualitative outputs and quantitative data:
    ```bash
@@ -395,7 +399,7 @@ This is optional, requires subagents, and most users won't need it. The human re
 
 ## Package and present
 
-Package the skill so the user can install it wherever they need it:
+Package the skill so the user can install it wherever they need it. Run the command from the skill-creator directory, which is where the `scripts` package resolves:
 
 ```bash
 python -m scripts.package_skill <path/to/skill-folder>
@@ -413,7 +417,7 @@ The workflow above assumes parallel subagents and a graphical browser. Adapt whe
 
 **No browser, display or `webbrowser.open()`.** Write the viewer with `--static <output_path>` and hand the user the file. If a browser is not an option at all, present each prompt and its output inline in the conversation and ask for feedback there: "How does this look? Anything you'd change?" Save the files the user needs to inspect to a writable path and tell them where.
 
-**Read-only skill directory.** Copy the skill to a writable location (`/tmp/skill-name/`), edit there, and package from the copy. Keep the skill's directory name and its `name` frontmatter unchanged, so the installed skill is replaced rather than duplicated.
+**Read-only skill directory.** Copy the skill to a writable directory the runtime provides, edit there, and package from the copy. Keep the skill's directory name and its `name` frontmatter unchanged, so the installed skill is replaced rather than duplicated.
 
 ---
 
