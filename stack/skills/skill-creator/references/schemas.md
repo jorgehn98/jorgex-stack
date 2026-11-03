@@ -216,6 +216,28 @@ Wall clock timing for a run. Located at `<run-dir>/timing.json`.
 
 ---
 
+## path.json
+
+The route a run took, not what it produced. Located at `<run-dir>/path.json`. Written from the transcript while the run is fresh; if the runtime exposes no transcript, record only what was observed.
+
+```json
+{
+  "steps": ["read SKILL.md", "read references/checklist.md", "write run.py", "run tests"],
+  "tools": ["read", "write", "shell"],
+  "references_read": ["references/checklist.md"],
+  "repeat_of": "eval-0-with_skill"
+}
+```
+
+- `steps`: ordered actions, in the words of the transcript
+- `tools`: distinct tools called, in first-use order
+- `references_read`: skill files the run loaded
+- `repeat_of`: (optional) run this one repeats in a variance check; omit the first run
+
+Two runs that pass every assertion by different paths mean the skill is not holding the process. Compare the paths of an eval and its repeats before deciding what to change.
+
+---
+
 ## benchmark.json
 
 Output from Benchmark mode. Located at `benchmarks/<timestamp>/benchmark.json`.
@@ -225,7 +247,7 @@ Output from Benchmark mode. Located at `benchmarks/<timestamp>/benchmark.json`.
   "metadata": {
     "skill_name": "pdf",
     "skill_path": "/path/to/pdf",
-    "executor_model": "claude-sonnet-4-20250514",
+    "executor_model": "<model-id-used-for-the-run>",
     "analyzer_model": "most-capable-model",
     "timestamp": "2026-01-15T10:30:00Z",
     "evals_run": [1, 2, 3],
