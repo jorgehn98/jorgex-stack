@@ -3,7 +3,7 @@ name: visual-director
 description: "Manual visual direction for premium websites and interfaces, audiovisual pieces, and fixed graphics. Use only when the user explicitly invokes visual-director or Visual Director; do not load automatically for ordinary styling, buttons, forms, or bug fixes. Turns a brief into visual directions, a coherent visual system, a minimum sufficient production method, and a defining prototype."
 compatibility: "For coding agents with project/file access. No external tool, framework, design service, browser tool, or rendering engine is mandatory: check what is already available and request authorized setup only when a real need requires it. Verify current official documentation and runtime support before committing to a technology."
 metadata:
-  version: "2.1.1-draft"
+  version: "2.1.2-draft"
   opencode/autoinvoke: false
 ---
 
