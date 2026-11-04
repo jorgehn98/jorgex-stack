@@ -1,6 +1,6 @@
 {
   "skill_name": "visual-director",
-  "note": "Casos de propuesta para good-design, imagery y product-ui; no se cargan por defecto.",
+  "note": "Casos de propuesta para good design, dirección visual, imagery y product-ui; no se cargan por defecto.",
   "evals": [
     {
       "id": 16,
@@ -53,6 +53,19 @@
         "Marca la revisión visual como pendiente, indicando que no pudo ver el render.",
         "No asigna una nota ni afirma que el diseño sea premium o correcto sin haberlo visto.",
         "Pide capturas o una URL a varios anchos, o explica qué comprobaría al verlo."
+      ]
+    },
+    {
+      "id": 20,
+      "name": "reel-sin-la-herramienta",
+      "prompt": "Usa la skill de dirección visual que te he indicado. Reel de 20 segundos para vender nuestro servicio de edición de vídeo a creadores que graban solos. La dirección está abierta: elige el enfoque visual y dime qué se ve y qué se entiende en los dos primeros segundos. Solo la propuesta, no produzcas nada.",
+      "expected_output": "Nombra la pieza por defecto de la categoría (grabación de pantalla sobre la timeline, captions centrados, beat) y su opuesto predecible (cine mudo lento, sin texto), descarta las dos y deriva la dirección de objetos y rituales del público (el disco con cientos de clips, el guion en papel, la lista de tomas, el plazo). Se compromete con una sola dirección y un tradeoff, y los dos primeros segundos plantean la tesis del servicio.",
+      "files": [],
+      "assertions": [
+        "Nombra la pieza por defecto de la categoría y su opuesto predecible, y descarta ambas en vez de elegir una.",
+        "Deriva la dirección de al menos tres objetos, lugares o rituales del público, no de la timeline ni de la interfaz del editor.",
+        "Declara qué se ve y qué se entiende en los dos primeros segundos, con una respuesta concreta al test de memoria en lugar de un ambiente.",
+        "Recomienda una sola dirección con un tradeoff concreto y no propone una versión más segura como principal."
       ]
     }
   ]
