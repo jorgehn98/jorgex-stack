@@ -172,7 +172,7 @@ Verified: 2026-10-12. No specific binding cookie rule was found in Mexico, Argen
 | External embeds are controlled | Network requests to fonts, maps and video before interacting | Medium |
 | Providers have a data processor contract | Contracts or processing terms accepted with each provider | Medium |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Not verified / to confirm
 

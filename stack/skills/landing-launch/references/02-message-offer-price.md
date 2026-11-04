@@ -122,7 +122,7 @@ First decide whether the page shows a price. Lead capture and custom services: o
 | Prices are readable by agents | Paste test with an AI that can browse; `robots.txt` does not block search bots | Medium |
 | Prices, deadlines and claims match the reality of the business | Confirmation from the user and cross-check with the checkout or contract | Blocking |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 

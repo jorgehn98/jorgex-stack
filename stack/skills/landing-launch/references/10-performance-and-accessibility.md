@@ -130,7 +130,7 @@ It is a reasonable target and also a legal risk (lawsuits in the US; an obligati
 | Structure: one H1, hierarchy, `lang`, `alt`, `prefers-reduced-motion` | HTML inspection and reduced-motion emulation | Low |
 | Continuous measurement active | RUM or linked Search Console and a scheduled monthly review | Low |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 

@@ -74,7 +74,10 @@ Base sequence (SaaS and lead capture): hero (what it is, for whom, why it matter
   - Lead capture with ads: no navigation, mobile first, a single CTA color and a form with the minimum fields.
   - Waitlist or launch: hero, email, proof or expectation and a short FAQ; short page.
   - Local service or SMB: what I do, where, proof (reviews, cases), process, visible contact (phone, map) and FAQ.
-  - Pricing and how it works: the price or the process replaces "solution"; objections and the FAQ weigh more.
+  - Home: serves at once the visitor who is ready to act and the one who is still researching, with two clear paths (see the price or start, and understand whether this is for them). It is not a menu of everything the company does.
+  - Pricing: resolves the anxiety of "which plan is mine?" with a recommended plan, a comparison that reads in one pass and the answer to what happens at the limit. A grid of tiers with no recommendation moves the decision back to the visitor.
+  - Feature page: connects the feature to the benefit and links to the plan or product that includes it. A feature page that does not lead to the plan that contains it converts nothing, however well it describes the feature.
+  - How it works: the process replaces "solution"; objections and the FAQ weigh more.
 - Gap: the sources give little reliable guidance for webinars, app downloads and enterprise B2B; if one comes up, research separately and say so.
 
 ### Conversion rules (ordered by impact)
@@ -126,7 +129,18 @@ Base sequence (SaaS and lead capture): hero (what it is, for whom, why it matter
 | The sticky CTA exists only if the page is long | Page height on mobile (over ~2 screens) and presence of the fixed element | Low |
 | Length fits the traffic's awareness | Compare page length with the level from 02 | Low |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
+
+### Regression audit: conversion fell after a redesign
+Compare the page before and after, not against a generic checklist: dated screenshots of both versions, the traffic mix of each period (an ad, a query or a campaign that changed explains a drop as well as the page) and the same device split.
+
+Check, in this order:
+- **Social proof lost or moved:** logos, testimonials and ratings removed, pushed below the fold or reduced to an anonymous "trusted by".
+- **CTA hierarchy changed:** a second equal-weight action, a different button position or colour, a form that moved.
+- **Message match broken:** the page no longer repeats what the ad, the email or the search query promised.
+- **Friction added:** more fields, an extra step, a consent wall, a slower load.
+
+Recommend reverting the high-risk changes first. If several are reverted at once, say so: the result will not tell which one caused the drop.
 
 ## Gate
 

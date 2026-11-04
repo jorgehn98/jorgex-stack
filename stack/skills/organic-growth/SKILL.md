@@ -1,6 +1,6 @@
 ---
 name: organic-growth
-description: Decide and verify what a product site should publish or fix next so it gets found in Google and cited by AI assistants. Inventories what already exists, diagnoses the pages that underperform, ranks the real gaps, produces with the project's own authoring rules, and records whether ChatGPT, Claude, Gemini and Perplexity name the brand. Use when the user asks what content to write next, why a page or the whole site is not getting traffic, whether AI recommends the product, or wants to audit a blog, docs, glossary, comparisons or alternatives pages, or work out what is missing from them; also when they mention SEO, GEO, AEO, AI search visibility, programmatic SEO, llms.txt or citation monitoring.
+description: Decide and verify what a product site should publish or fix next so it gets found in Google and cited by AI assistants. Inventories what already exists, diagnoses the pages that underperform, ranks the real gaps, produces with the project's own authoring rules, and records whether ChatGPT, Claude, Gemini and Perplexity name the brand. Use when the user asks what content to write next, why a page or the whole site is not getting traffic, whether AI recommends the product, or wants to audit a blog, docs, glossary, comparisons or alternatives pages, or work out what is missing from them; also when the question spans the whole site or the brand — site-wide SEO or technical audits, GEO/AEO, what AI assistants say about the brand (accuracy, citations, LinkedIn or other off-site sources), programmatic SEO, llms.txt or citation monitoring. For one conversion page's SEO, use landing-launch.
 ---
 
 # Organic growth
@@ -27,7 +27,9 @@ Diagnosis is what separates an audit from a wish list. A site with sixty pages a
 
 The skill does not improve by re-reading the same pages and forming new opinions about them. It improves only when new evidence arrives from outside:
 
-- **Search Console** — impressions, clicks, average position per page and query. A page with impressions and no clicks has a metadata or intent problem; a page with neither has a reachability or authority problem. The two need opposite fixes.
+- **Search Console** — impressions, clicks, average position per page and query. A page with impressions and no clicks has a metadata or intent problem; a page with neither has a reachability or authority problem. The two need opposite fixes. If it is not connected, say so and use the two sources below; do not replace it with keyword guesses. Where it is connected, its generative AI performance report (per Google's guide) reports search-side metrics, not the prompt-level answers the citation log records. Branded-search tracking and real indexation coverage are marked **requires Search Console**: report the gap instead of inferring it.
+- **GA4, AI referrals** — a channel group for known AI referrers (chatgpt.com, perplexity.ai, gemini.google.com, copilot.microsoft.com, claude.ai) and the sessions it brings, read over 24-hour and 7-day windows. Most visits after an AI recommendation arrive later and without a referral parameter, so the number is a floor, not the total.
+- **Self-reported attribution** — an "AI" option in the contact form's "how did you hear about us?", with a follow-up "What did you ask?". It catches the buyers who arrive by branded search or direct and are invisible to the referral report.
 - **The citation log** — which entity facts the assistants are missing.
 - **The backlog's own `verified` state** — which past bets paid off. A backlog that never records outcomes is a to-do list, not a strategy.
 
@@ -60,6 +62,8 @@ Write findings into that existing place only when the user asks to persist them.
 - `references/diagnosis.md` — what to check on a page that already exists, ordered by how often it is the actual problem.
 - `references/prioritization.md` — the criteria, the ranking and the backlog format.
 - `references/citation-check.md` — how to measure AI citations without inventing a score.
+- `references/technical.md` — the site-wide technical audit, and what needs Search Console.
+- `references/offsite-surfaces.md` — LinkedIn and YouTube as citable surfaces, and why not to concentrate there.
 - `references/programmatic.md` — whether a family of template pages should exist, and how to model, roll out and retire it.
 
 Load the one for the step you are in. Producing a new page without reading `diagnosis.md` is how a site ends up with sixty mediocre pages and one more.
