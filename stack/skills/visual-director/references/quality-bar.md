@@ -17,6 +17,10 @@ Collect related findings in one pass, prioritize what compromises the brief, and
 
 Review both the **creative** axis (direction, coherence, hierarchy, rhythm, legibility, emotion) and the **technical** axis (viability, performance, accessibility, compatibility, export, cost). Either can pass while the other fails. Do not self-congratulate: report evidence, not opinions about your own work.
 
+## Fresh eyes
+
+You built it, so your reading of it is the least reliable. When the piece is substantial and the runtime offers a fresh reviewer, hand it the brief and the renders and ask what fails against the brief, not whether it is good; keep your reasoning out of the handover. Without one, run the pass adversarially in writing: name the three ways this piece could be wrong, then look for each in the render.
+
 ## Common checks
 
 - **Specificity**: does the design clearly belong to this subject and pass the competitor test in [good design](good-design.md)? Are palette, type, material and motion traceable to the brief?
