@@ -62,7 +62,7 @@ Format: `event | description | properties | trigger | notes`. Lowercase names wi
 ### Visitor source (UTM as hidden fields)
 
 - On the first visit, capture `utm_source/medium/campaign/content/term`, `gclid`/`fbclid` if there are ads, the `referrer` and the landing page, and **send them as hidden fields with the form** (07), so the lead reaches the CRM with its source. Without this, the source is lost between the visit and the submission. If you store it in your own storage, it is subject to consent where applicable.
-- Naming and UTM conventions: follow the analytics skill (hyphens in UTM values, snake_case in events). Here only: no internal UTMs, and UTMs travel as hidden fields (07).
+- Naming and UTM conventions: follow the analytics skill if installed (hyphens in UTM values, snake_case in events); otherwise use those same conventions and keep the sheet with the event plan. Here only: no internal UTMs, and UTMs travel as hidden fields (07).
 - **Self-reported attribution**: optional "How did you hear about us?" field (free text or list with "other"). It is the strongest signal for word of mouth, podcasts and communities, which tracking does not see; weigh it.
 - Do not add up the conversions each ad platform reports: the source of truth is the real number of submissions or sales on the server, and platforms are checked against it.
 - "Direct" and branded search are not channels: they are where demand created elsewhere gets collected.
@@ -81,7 +81,7 @@ Format: `event | description | properties | trigger | notes`. Lowercase names wi
 - Chosen tool and its consent impact, documented for 09.
 - Approved event plan, with the conversion defined as confirmed success.
 - Source capture (UTM, `gclid`, referrer) traveling all the way to the lead.
-- For the measurement plan, the UTM sheet, event naming across the site and how to read the reports, the `analytics` skill. For what to do with the data and how often to iterate, 11.
+- The measurement plan, UTM sheet, site-wide event naming and reports: the `analytics` skill if installed; otherwise keep those artifacts in the project. What to do with the data and how often to iterate: 11.
 
 ## Verify
 

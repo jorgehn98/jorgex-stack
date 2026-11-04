@@ -7,6 +7,8 @@ Several reference files in this skill adapt and condense material from **Marketi
 - `references/06-ai-search-visibility.md`: crawler policy and agent access and discovery, from `ai-seo` (`agent-readiness`, `platform-ranking-factors`).
 - `references/08-analytics.md`: the page-scope boundary for analytics and field-level form metrics, from `analytics` and `cro` (`references/form.md`).
 
+Other references (`01`, `02`, `05`, `07`, `11`) adapt smaller amounts from the same source and name it in their Sources line.
+
 Other material comes from official documentation (Google, web.dev, W3C, AEPD, CNIL, ICO, FTC and others, cited in each file) and original work. The original license text follows.
 
 ---

@@ -1,6 +1,6 @@
 # Technical audit
 
-The site-wide checks that decide whether anything published can be found. On a small site this is an afternoon, not a tool stack: run it when the inventory shows a reachability problem, after a migration, and once a quarter. It is the last priority in `prioritization.md` because, on its own, it rarely explains flat traffic.
+The site-wide checks that decide whether anything published can be found. On a small site this is an afternoon, not a tool stack: run it when the inventory shows a reachability problem, after a migration, and once a quarter. It is the last priority in `prioritization.md` because, on its own, it rarely explains flat traffic. The recurring launch and maintenance checklist that triggers it lives in the `landing-launch` skill (`references/11-qa-launch-iteration.md`); this file is the detailed pass, not a second schedule.
 
 Items marked **requires Search Console** cannot be concluded from outside. If the property is not connected, say so and use the alternative; do not turn an absence of data into a pass or a fail.
 
