@@ -18,7 +18,7 @@ Para mejorar una referencia de la skill, empieza por los capítulos que la suste
 | Referencia de la skill | Capítulos |
 | --- | --- |
 | `SKILL.md` (fases, rutas, fronteras) | [00](00-encargo-y-arquitectura.md), [04](04-conversacion-autonomia-y-revision.md) |
-| `discovery.md`, `visual-direction.md` | [04](04-conversacion-autonomia-y-revision.md), [10](10-criterio-artistico-y-taste.md), [19](19-direccion-creativa-prototipos-y-critica.md) |
+| `discovery.md`, `visual-direction.md` | [04](04-conversacion-autonomia-y-revision.md), [10](10-criterio-artistico-y-taste.md), [19](19-direccion-creativa-prototipos-y-critica.md), [23](23-impeccable-extraccion-2026-11.md) |
 | `design-system.md`, `design-record.md` | [09](09-brand-kit-evolutivo.md), [15](15-marca-portable-y-grafica-fija.md) |
 | `frontend-routing.md` | [03](03-web-narrativa-cro-y-motion.md), [17](17-casos-web-narrativos-y-cro.md), [21](21-web-interfaces-estados-y-experiencia.md) |
 | `video-routing.md` | [01](01-video-metodos-y-pipelines.md), [02](02-video-herramientas-y-evidencia.md), [08](08-edicion-y-transcripcion.md), [13](13-edicion-multimodal-y-flujos-reales.md), [16](16-acabado-audiovisual-y-entrega-editable.md) |
@@ -28,7 +28,7 @@ Para mejorar una referencia de la skill, empieza por los capítulos que la suste
 | `generative-media.md` | [02](02-video-herramientas-y-evidencia.md), [20](20-generacion-controlada-y-referencias.md) |
 | `audio.md` | [08](08-edicion-y-transcripcion.md), [12](12-transcripcion-precision-y-silencios.md), [16](16-acabado-audiovisual-y-entrega-editable.md) |
 | `opendesign.md`, `official-docs.md` | [05](05-herramientas-y-conectores.md), [11](11-skills-externas-aportes-y-limites.md) |
-| `quality-bar.md`, `evals/` | [07](07-validacion-y-decisiones-pendientes.md), [10](10-criterio-artistico-y-taste.md), [19](19-direccion-creativa-prototipos-y-critica.md) |
+| `quality-bar.md`, `evals/` | [07](07-validacion-y-decisiones-pendientes.md), [10](10-criterio-artistico-y-taste.md), [19](19-direccion-creativa-prototipos-y-critica.md), [23](23-impeccable-extraccion-2026-11.md) |
 
 ## Capítulos
 
@@ -43,6 +43,7 @@ Para mejorar una referencia de la skill, empieza por los capítulos que la suste
 - [04 — Conversación, autonomía y revisión](04-conversacion-autonomia-y-revision.md): descubrimiento proporcional, dueños de cada registro, autonomía dentro del alcance y bucle de revisión.
 - [10 — Criterio artístico](10-criterio-artistico-y-taste.md): ocho principios comunes atribuidos, sin prohibiciones ni cuotas; evaluación artística y funcional.
 - [19 — Dirección creativa, prototipos y crítica](19-direccion-creativa-prototipos-y-critica.md): método de dirección, prototipo como pregunta y crítica por lentes separadas.
+- [23 — Impeccable v4.8.0, extracción conductual](23-impeccable-extraccion-2026-11.md): los tres frenos contra el promedio, qué se adoptó y qué se rechazó en la lectura de noviembre.
 - [09 — Brand kit evolutivo](09-brand-kit-evolutivo.md): un dueño por dato, provisional frente a canónico, versionado y reutilización.
 - [05 — Herramientas y conectores](05-herramientas-y-conectores.md): cómo se introduce una herramienta externa, revisión local previa y qué no autoriza instalar o conectar.
 - [11 — Skills externas](11-skills-externas-aportes-y-limites.md): cuatro repositorios y cuatro fuentes profesionales, con qué adoptar, adaptar y rechazar.

@@ -14,7 +14,7 @@ When the idea is already defined, clarify invariants, inspect the real reference
 
 When the idea is open, proactively produce two or three genuinely **distinct** concepts specific to the subject, and recommend one with concrete tradeoffs.
 
-Derive them before writing any of them. Name the piece this category always ships and its predictable opposite, and keep both out. Then list six to eight concrete worlds, artifacts, places, rituals or printed things the audience knows by heart, each with its ground, its light, its lettering and the one signature that makes it recognizable; the world's graphic and screen traditions count, not only its physical objects. If four of them share one material family, the derivation stopped at the subject's most obvious artifact; dig until it spans three. The tools of the craft are not a world: a terminal, a timeline or a control panel handed to a piece about that work is a costume.
+Derive them before writing any of them. State in one line of the proposal the piece this category always ships and its predictable opposite, and rule both out. Then list six to eight concrete worlds, artifacts, places, rituals or printed things the audience knows by heart, each with its ground, its light, its lettering and the one signature that makes it recognizable; the world's graphic and screen traditions count, not only its physical objects. If four of them share one material family, the derivation stopped at the subject's most obvious artifact; dig until it spans three. The tools of the craft are not a world: a terminal, a timeline or a control panel handed to a piece about that work is a costume.
 
 Each option states:
 
@@ -25,7 +25,7 @@ Each option states:
 - one defining moment or sequence, if the concept benefits from one;
 - minimum candidate method and its main tradeoff.
 
-Do not offer cosmetic palette variants of the same template, and do not delegate all the creativity to the user: each option must defend why it fits. On pages and campaigns, to force real distance between options, take them from different [composition families](composition-families.md) and rule out those whose needs the project cannot meet. If the user asks only for the recommendation, develop that one and name the rejected options with their reason.
+Do not offer cosmetic palette variants of the same template, and do not delegate all the creativity to the user: each option must defend why it fits. On pages and campaigns, to force real distance between options, take them from different [composition families](composition-families.md) and rule out those whose needs the project cannot meet. If the user asks only for the recommendation, develop that one and name the rejected options with their reason. The recommendation also names what it gives up against the nearest rejected option; a direction that names no cost has not been chosen.
 
 ## Make one thing characteristic
 
