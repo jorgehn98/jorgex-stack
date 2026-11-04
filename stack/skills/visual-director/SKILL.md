@@ -3,7 +3,7 @@ name: visual-director
 description: "Manual visual direction for premium websites and interfaces, audiovisual pieces, and fixed graphics. Use only when the user explicitly invokes visual-director or Visual Director; do not load automatically for ordinary styling, buttons, forms, or bug fixes. Turns a brief into visual directions, a coherent visual system, a minimum sufficient production method, and a defining prototype."
 compatibility: "For coding agents with project/file access. No external tool, framework, design service, browser tool, or rendering engine is mandatory: check what is already available and request authorized setup only when a real need requires it. Verify current official documentation and runtime support before committing to a technology."
 metadata:
-  version: "2.1.0-draft"
+  version: "2.1.1-draft"
   opencode/autoinvoke: false
 ---
 
@@ -79,6 +79,8 @@ Marketing, demo, tutorial, story and editorial have different jobs: establish wh
 - **Open idea**: propose two or three genuinely distinct, subject-specific directions; recommend one with concrete tradeoffs. Avoid cosmetic variants of the same template, and do not force the user to supply all the creativity. Start from the subject inventory and idea in [good design](references/good-design.md); generic patterns are prompts to justify, never automatic failures, and the brand wins.
 
 When a direction is already approved, develop it without reopening the choice. A brand fixes the visual system, not necessarily the composition: if the composition is open, still offer distinct options inside the brand. What each option states is in [visual direction](references/visual-direction.md).
+
+Land the selected direction whole: later passes clarify it rather than softening it back toward a familiar result. The candidate derivation (the category's default piece, the audience's world, the material families) and the commitment rule are in [visual direction](references/visual-direction.md).
 
 Do not promise asset fidelity, export capability or a working interaction before inspecting the assets and checking the tools.
 

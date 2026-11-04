@@ -26,6 +26,8 @@ Places to look for the first blank: what it produces, its object or silhouette, 
 
 **Competitor test:** put the nearest real competitor in the sentence. If it still works, the idea belongs to the category: a loaf is every bakery; the seven doors of the street this one is named after are only this one. "Clean and modern" never passes.
 
+**Guess test (the look):** hold the proposal against its category. If someone could guess this aesthetic from the subject alone, or from the subject plus its obvious antidote, neither answer is a decision. The antidote is not the way out; §5 records what happens when everyone takes it.
+
 **Carry it through.** The commonest failure, even in good work, is a distinctive opening followed by stock blocks. The idea must reach the pricing, the FAQ, the footer, the last scene.
 
 **One live thing, when it fits.** On interactive pieces, consider one thing the visitor can do or that differs per visit, made from the idea and its real content: pick a wood and see the chair in it, set the loan and read the real monthly figure, see whether the hut's stove is lit. It works by thumb, has a plain fallback and never blocks reading. It is an option, not a requirement; do not add one where it would be a toy.
@@ -58,6 +60,8 @@ Tells expire. Every published "use this instead" list has become the next wave, 
 **Third wave (2025-2026), the remedy that became the look.** "Warm it up and make it editorial": cream ground with terracotta or rust; high-contrast serif as a shortcut to "premium"; oversized italic serif headlines; broadsheet cosplay on subjects that are not news; performative labels ("Field notes", "Quietly trusted by"). Warmth can come instead from a low-chroma stone, a deep ink, a photograph or one full warm field.
 
 **Gallery costume.** Monospace micro-labels as a "technical" voice, 01/02/03 index numbering, ruled grids, design-tool chrome as ornament (crosshairs, crop marks, handles), agency micro-meta (local time, coordinates, version stamps, "Scroll"), arrows on every link, tiny tracked captions scattered around the viewport. These are common on award sites, and generators copy them first. A brand can own them, and then they stay, used where they carry meaning; without brand or meaning they are costume that only signals "designed". Mono labels and numbering are more common on the study's top sites (table below), so the suspicion here is judgement about defaults, not a measured defect.
+
+**Surfaces and type.** A coloured stripe down one edge of a card, callout or alert; a hard offset block shadow outside a world that is actually neobrutalist; muted text in plain grey on a coloured field instead of a tint of that hue; a grid, stripe or dot texture standing in for a ground; an illustration assembled from rounded rectangles and circles where a drawing of the subject belongs; a geometric mask or radial cutout tracing a photographed subject's edge instead of a real cut-out. The faces models reach for by default deserve the same suspicion, and naming a default is not the same as prescribing a replacement: Inter, Roboto, Fraunces, Geist, Playfair Display, Space Grotesk, Plus Jakarta Sans, DM Sans, Instrument Sans. Using one costs a reason no other face could satisfy; a subject association ("books want a serif") is not that reason.
 
 **Structure.**
 - A full sentence set at display size over three or four lines.

@@ -12,7 +12,11 @@ When the idea is already defined, clarify invariants, inspect the real reference
 
 ## Open direction: two or three real options
 
-When the idea is open, proactively produce two or three genuinely **distinct** concepts specific to the subject, and recommend one with concrete tradeoffs. Each option states:
+When the idea is open, proactively produce two or three genuinely **distinct** concepts specific to the subject, and recommend one with concrete tradeoffs.
+
+Derive them before writing any of them. Name the piece this category always ships and its predictable opposite, and keep both out. Then list six to eight concrete worlds, artifacts, places, rituals or printed things the audience knows by heart, each with its ground, its light, its lettering and the one signature that makes it recognizable; the world's graphic and screen traditions count, not only its physical objects. If four of them share one material family, the derivation stopped at the subject's most obvious artifact; dig until it spans three. The tools of the craft are not a world: a terminal, a timeline or a control panel handed to a piece about that work is a costume.
+
+Each option states:
 
 - central visual idea tied to the subject;
 - palette, typography and composition;
@@ -26,6 +30,8 @@ Do not offer cosmetic palette variants of the same template, and do not delegate
 ## Make one thing characteristic
 
 For web, the first viewport foregrounds the most characteristic thing in the subject's world. For video, define one signature shot, transition or motion idea a viewer could recall. Spend visual boldness there; keep supporting areas disciplined.
+
+The first screen, first frame or first seconds carry the thesis, not an introduction to it. Memory test: if someone left after one screen or two seconds, what would they describe an hour later? If the honest answer is a mood, the concept has not committed.
 
 ## Typography and structure are visual material
 
@@ -42,6 +48,10 @@ Non-user-triggered motion should be selective; one orchestrated sequence often r
 ## Two passes
 
 **Pass 1 — Direction**: palette, type, composition/layout, shape/material, imagery, motion/camera and one signature moment. **Pass 2 — Genericity critique**: apply the competitor test and the tells in [good design](good-design.md); what is genuinely specific; is the signature moment doing the work; what should be removed. Revise before implementation if it still reads as a template. Name the few defaults this direction deliberately excludes, so production does not drift back to them.
+
+## Commit, do not dilute
+
+Land the chosen direction whole, not a safer reading of it. Later passes clarify what the piece already is; they do not soften it back toward a familiar page, cut or poster. When torn between refined and committed, commit: in unattended work the safe rendition is the known risk. Feedback reopens the decision it contradicts and is not a licence to average the result.
 
 ## Copy and references
 
