@@ -2,6 +2,8 @@
 
 Define what to measure, with which tool, and how to guarantee that the recorded conversion is real. It is site-level for the tool, the consent and the account (done once) and page-level for the event plan and the source fields. It applies to any public marketing page; a landing page needs few events.
 
+Scope: this phase covers tracking for one page (events, consent, source capture to the lead, validation). For the site-wide measurement plan, UTM sheet, event naming and reading results, use the analytics skill if available; if it conflicts with this file on consent, conversion definition or GTM, this file wins for pages being built.
+
 ## Input
 
 - Single goal and jurisdiction (01).
@@ -54,12 +56,13 @@ Format: `event | description | properties | trigger | notes`. Lowercase names wi
 
 - **The conversion is the confirmed success, not the button click**: a click that fails validation or the antispam would inflate the figure and misalign the campaigns that optimize on it.
 - Direct contact (phone, WhatsApp, `mailto`) is measured as its own click event; it is an approximate conversion, because the click does not guarantee the call.
+- **Field-level metrics** (errors and drop-off per field, on top of `form_started`) only pay off with enough traffic to separate signal from noise; on a low-traffic page they add setup and no decision. If you add them, keep the field names identical to those of the form and never record what was typed.
 - For a marketing page, drop onboarding, product usage, subscription and cart events.
 
 ### Visitor source (UTM as hidden fields)
 
 - On the first visit, capture `utm_source/medium/campaign/content/term`, `gclid`/`fbclid` if there are ads, the `referrer` and the landing page, and **send them as hidden fields with the form** (07), so the lead reaches the CRM with its source. Without this, the source is lost between the visit and the submission. If you store it in your own storage, it is subject to consent where applicable.
-- UTM convention: lowercase, consistent separator, specific names (`blog_footer_cta`, not `cta1`) and a documented sheet. Do not put UTMs on the site's own internal links: they restart the session and falsify the source.
+- Naming and UTM conventions: follow the analytics skill if installed (hyphens in UTM values, snake_case in events); otherwise use those same conventions and keep the sheet with the event plan. Here only: no internal UTMs, and UTMs travel as hidden fields (07).
 - **Self-reported attribution**: optional "How did you hear about us?" field (free text or list with "other"). It is the strongest signal for word of mouth, podcasts and communities, which tracking does not see; weigh it.
 - Do not add up the conversions each ad platform reports: the source of truth is the real number of submissions or sales on the server, and platforms are checked against it.
 - "Direct" and branded search are not channels: they are where demand created elsewhere gets collected.
@@ -78,8 +81,7 @@ Format: `event | description | properties | trigger | notes`. Lowercase names wi
 - Chosen tool and its consent impact, documented for 09.
 - Approved event plan, with the conversion defined as confirmed success.
 - Source capture (UTM, `gclid`, referrer) traveling all the way to the lead.
-- Minimum tracking dashboard: visits by source/medium/campaign, conversion rate (confirmed submissions divided by visits) by source and device, form abandonment (start versus submission), clicks by CTA and location, field CWV on mobile, Search Console organic queries and lead quality in the CRM.
-- Review cadence: weekly the first month, monthly after that. Do not change the page based on a few days of data: with low traffic the rates are noise (iteration decisions in 11).
+- The measurement plan, UTM sheet, site-wide event naming and reports: the `analytics` skill if installed; otherwise keep those artifacts in the project. What to do with the data and how often to iterate: 11.
 
 ## Verify
 
@@ -102,15 +104,14 @@ Format: `event | description | properties | trigger | notes`. Lowercase names wi
 | There is no personal data in events or URLs | Payloads in Network and thank-you page URLs | High |
 | Event plan documented | Plan document with names, properties and triggers | Medium |
 | A single tool and no internal traffic | Tags present in the served HTML; internal-traffic filter in the configuration | Medium |
-| UTMs follow a convention and there are no internal UTMs | UTM sheet and internal links in the served HTML | Low |
+| There are no internal UTMs on the site's own links | Internal links in the served HTML | Low |
 | Self-reported attribution exists | "How did you hear about us?" field in the form | Low |
 | "No consent needed" claims are verified | Reference to the authority's official guide, or the tool is listed in the policy as not verified | Medium |
-| A tracking dashboard exists | Report view with the minimum metrics | Low |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 
 Do not move to 09 without: chosen tool and its consent impact documented, approved event plan, conversion defined as confirmed success, UTM and source traveling to the lead, and completed validation (including the test with the banner untouched).
 
-Sources: Google documentation (GA4, Consent Mode, Tag Assistant); CNIL, AEPD and ICO guides on audience measurement; own judgment. Adapted in part from Corey Haines, Marketing Skills (https://github.com/coreyhaines31/marketingskills, MIT: analytics, attribution).
+Sources: Google documentation (GA4, Consent Mode, Tag Assistant); CNIL, AEPD and ICO guides on audience measurement; own judgment. Adapted in part from Corey Haines, Marketing Skills (https://github.com/coreyhaines31/marketingskills, MIT: analytics, attribution, and cro's form reference for the field-level metrics).

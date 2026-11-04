@@ -56,7 +56,7 @@ Ask only what is not already in the repo or the design; these are inputs and mus
 | A reusable context document exists | Brief file in the repo or documentation, with a version | Low |
 | Sector constraints are identified | Presence or absence of regulated claims (health, finance, legal) in the served HTML | High |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 

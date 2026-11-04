@@ -144,7 +144,7 @@ Evidence per moment: before (staging), during (launch) and after (two weeks).
 | Post-launch follow-up: indexing, 404s and conversions per page | Search Console report and comparison with the previous period | Medium |
 | Sharing and in-app browsers | Open Graph debugger and a capture in LinkedIn, Instagram or Facebook | Low |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 

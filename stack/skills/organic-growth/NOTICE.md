@@ -1,6 +1,17 @@
 # Notice
 
-`references/programmatic.md` adapts and condenses material from the `programmatic-seo` skill of **Marketing Skills** by Corey Haines (https://github.com/coreyhaines31/marketingskills), used under the MIT License. The original license text follows.
+Several reference files in this skill adapt and condense material from **Marketing Skills** by Corey Haines (https://github.com/coreyhaines31/marketingskills, revision 88c79f6), used under the MIT License. In particular:
+
+- `references/programmatic.md`: from `programmatic-seo`.
+- `references/citation-check.md`: the visibility ladder, the source-mix taxonomy, the claim ledger and the prompt portfolio, from `ai-seo` (`citations-vs-recommendations`, `answer-accuracy`, `prompt-portfolio`, `format-volatility`).
+- `references/inventory.md`: entity consistency off the site and fact-family planning, from `ai-seo` (`positioning-and-consensus`, `content-patterns`).
+- `references/prioritization.md`: the dated warning on listicles and comparison pages, from `format-volatility`.
+- `references/offsite-surfaces.md`: from `ai-seo` (`linkedin-ai-citations`, `youtube-ai-citations`).
+- `references/technical.md`: from the technical audit in `seo-audit`.
+- `references/diagnosis.md`: the striking-distance block, from `seo-audit/references/rankings-push.md`.
+- `SKILL.md` ("What makes it improve"): the attribution sources, from `ai-seo/references/ai-attribution.md`.
+
+The original license text follows.
 
 ---
 

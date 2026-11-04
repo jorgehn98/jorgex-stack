@@ -1,6 +1,15 @@
 # Notice
 
-Several reference files in this skill adapt and condense material from **Marketing Skills** by Corey Haines (https://github.com/coreyhaines31/marketingskills), used under the MIT License. The original license text follows. Other material comes from official documentation (Google, web.dev, W3C, AEPD, CNIL, ICO, FTC and others, cited in each file) and original work.
+Several reference files in this skill adapt and condense material from **Marketing Skills** by Corey Haines (https://github.com/coreyhaines31/marketingskills, revision 88c79f6), used under the MIT License. In particular:
+
+- `references/03-structure-and-conversion.md`: page-specific CRO frameworks (home, pricing, feature) and the regression audit, from `cro`.
+- `references/04-copywriting.md`: the situation diagnosis, the drafting protocol, claims with an unlock path, second-generation AI tells and the self-check exceptions, from `copywriting` and `copy-editing`.
+- `references/06-ai-search-visibility.md`: crawler policy and agent access and discovery, from `ai-seo` (`agent-readiness`, `platform-ranking-factors`).
+- `references/08-analytics.md`: the page-scope boundary for analytics and field-level form metrics, from `analytics` and `cro` (`references/form.md`).
+
+Other references (`01`, `02`, `05`, `07`, `11`) adapt smaller amounts from the same source and name it in their Sources line.
+
+Other material comes from official documentation (Google, web.dev, W3C, AEPD, CNIL, ICO, FTC and others, cited in each file) and original work. The original license text follows.
 
 ---
 

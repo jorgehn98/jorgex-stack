@@ -113,7 +113,7 @@ Ask the user; do not assume:
 | The form works with keyboard and on mobile | Tab walkthrough and test on a real phone; `type` and `autocomplete` in the HTML | Medium |
 | Minimum fields are justified | List of fields against what the follow-up uses | Low |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 

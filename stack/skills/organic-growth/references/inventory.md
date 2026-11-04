@@ -41,13 +41,27 @@ Zeros are the finding, and a matrix makes them undeniable in a way prose does no
 Check each of these and whether it agrees with reality:
 
 - `sitemap.xml` — generated or hand-written? Does it include the newest pages?
-- `robots.txt` — are AI crawlers allowed or blocked? Blocking GPTBot while asking for AI citations is a contradiction worth catching here.
-- `llms.txt` and `llms-full.txt` — do they list pages that exist?
+- `robots.txt` — are AI crawlers allowed or blocked, and is the block deliberate? Blocking the *search* crawlers (`OAI-SearchBot`, `PerplexityBot`, `Claude-SearchBot`, `meta-webindexer`) while asking to be cited is a contradiction worth catching here. Blocking training crawlers (`GPTBot`, `ClaudeBot`) is a separate opt-out and does not stop citations on its own. A WAF or CDN can block them too, even with a permissive file.
+- `llms.txt` and `llms-full.txt` — do they list pages that exist, and is `llms.txt` linked from a visible page?
 - JSON-LD per page type: `Article`, `FAQPage`, `Person`, `Product`, `SoftwareApplication`, `BreadcrumbList`.
 - `canonical` and `hreflang` — is every variant of a page listed on every other variant?
 - Markdown variants served to agents, if the project has them.
 
 If the project has a generation step for these files, run it and inspect the diff instead of editing artifacts by hand. Drift between the generator and the committed files is itself a finding.
+
+The rest of the site-wide technical checks — real indexation, canonicalisation, URL structure, Core Web Vitals, mobile, HTTPS, and what needs Search Console — are in `technical.md`. Do not repeat them here.
+
+## The entity off the site
+
+Models build the brand from everything published about it, not only from the site. Read the profiles a buyer or an assistant would find: LinkedIn (company page and the person's profile), Google Business Profile where the business has a local presence, directories, review platforms and partner pages.
+
+- **The same segment, category and proposition as the About page.** If the site says one thing and the profile says another, the assistant has two entities and picks the one with more corroboration.
+- **Fill the free fields** (what it does, who it is for, which industries). An empty profile is an absence, and absence reads as unknown, not as neutral.
+- **Reviews and posts on those profiles count as text.** An outdated claim there gets quoted back as current.
+- **After a repositioning, change the off-site profiles first and the site second.** The old association survives longer in profiles and reviews than in the page; swapping everything at once loses the old segment before earning the new one.
+- **Answer the "cons" assistants repeat.** Aggregators list one con per product. If it reinforces a weakness the model already states, publish the real number or process on the page that owns it and ask the publisher for a different true con, never for removal.
+
+The LinkedIn surface, and how to make its text citable, is in `offsite-surfaces.md`.
 
 ## What the site does not say
 
@@ -59,6 +73,14 @@ Read the top pages as a stranger arriving from a search result. Can you answer, 
 - where the data is stored and how to cancel
 
 A missing answer is a gap as real as a missing page, and it is the gap that stops an assistant from describing the product correctly.
+
+### Fact families, not a page per question
+
+Engines rewrite a prompt into several background searches before answering, and 91% of ChatGPT's search queries were unique across repeated runs (Profound, April 2026; observational vendor research). Exact query strings will not repeat, so plan by the stable **fact families** underneath them: price, delivery time, stack, process, integrations, data location, cancellation, limits.
+
+Each fact family has **one owning page**, however many derived questions point to it. One strong page can answer several families. A page per fan-out query is a doorway page, it competes with its own siblings, and Google's scaled-content policy targets it.
+
+List the families a buyer needs, name the owning page for each, and mark the missing ones. If two pages claim the same fact, that is a defect to fix, not a plan.
 
 ## Output
 

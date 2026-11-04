@@ -56,6 +56,14 @@ The page is generated from a record: a typed object, a frontmatter schema, a CMS
 
 Ask whether the data could hold the truth at all. If it cannot, say so plainly: the fix belongs in the type or the data file, it affects every sibling page, and it is a decision for the user rather than a text edit. This is the finding most likely to be missed, because it requires looking past the page that was asked about.
 
+## 10. Striking distance (deferred: requires Search Console)
+
+Pages ranking 8–20 with real impressions are the cheapest content win: one missing section, a fresher answer or a better internal link can move them onto page one. A page ranking 1–5 with a low CTR for its position has a title or description problem, not a content problem.
+
+Export query + page pairs for 28 days, compare with the previous period to filter spikes, and read the three results above yours for the concrete reason they win: intent match, a section you skip, freshness, format, or links. Then make the smallest change that closes the gap and wait 3–4 weeks before judging it.
+
+This block is **deferred without Search Console**: positions cannot be inferred from a manual search. Do not guess them.
+
 ## How to report
 
 One line per defect, in this shape:

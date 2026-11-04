@@ -99,7 +99,7 @@ The measurement method, budgets and fixes are in 10; the thresholds and basic ru
 | Open Graph and Twitter Card complete | Sharing debugger output with title, description and image | Low |
 | `lang` on `<html>`, favicon, correct hreflang if multilanguage | `<head>` inspection; validation of reciprocal hreflang pairs | Low |
 
-Verdict per item: Pass / Improvable / Missing / N/A.
+Verdict per item: Pass / Improvable / Missing / N/A / Not verified.
 
 ## Gate
 Move on to 06 only with: indexable URL and correct canonical, content in the server HTML, title, meta and H1 aligned, Core Web Vitals within threshold on mobile, schema validated and matching the content, and correct sitemap and robots.txt.
