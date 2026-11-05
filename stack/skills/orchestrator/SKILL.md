@@ -30,13 +30,12 @@ Roles are skills, not agents. Load one yourself when you are going to do the wor
 | Skill | Use it for | Level | Effort |
 |---|---|---|---|
 | `implementer` | A bounded change with its tests and local docs | N3 | medium |
-| `generalist` | Bounded documentation, translation or mechanical work | N1 | low |
 | `analyst` | One concrete question about the codebase before deciding | N2 | medium |
 | `reviewer` | Correctness, coverage, types, errors and comments of a candidate | N3 | high |
 | `security-auditor` | Authorization, permissions, sensitive data and trust boundaries | N4 | medium |
 | `simplifier` | Material complexity in a change, using `lean-code` | N2 | medium |
 
-- **Levels**: N1 mechanical, N2 standard, N3 high, N4 maximum. Resolve the level with the ladder defined in the user's global instructions for this runtime (for example `N3 = ...`). Pass `model` and `effort` to the child only when that ladder defines them; never guess a model ID or an effort name. Without a ladder, the child inherits your model, and you say so once.
+- **Levels**: N1 mechanical, N2 standard, N3 high, N4 maximum. N1 is also the level for delegated work that needs no role skill at all. Resolve the level with the ladder defined in the user's global instructions for this runtime (for example `N3 = ...`). Pass `model` and `effort` to the child only when that ladder defines them; never guess a model ID or an effort name. Without a ladder, the child inherits your model, and you say so once.
 - The roles of analysis (`analyst`, `reviewer`, `security-auditor`, `simplifier`) must not modify files or run shell commands. That is an instruction, not an enforced boundary: after a reader returns, check `git status` yourself.
 
 ## Delegate

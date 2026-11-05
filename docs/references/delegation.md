@@ -1,6 +1,6 @@
 # Delegación por niveles
 
-Los seis roles de trabajo (`implementer`, `generalist`, `analyst`, `reviewer`, `security-auditor`, `simplifier`) son skills, no agentes. El principal de cada runtime carga `orchestrator` y, cuando delega, lanza el subagente general del runtime y le dice qué skill de rol cargar.
+Los cinco roles de trabajo (`implementer`, `analyst`, `reviewer`, `security-auditor`, `simplifier`) son skills, no agentes. El principal de cada runtime carga `orchestrator` y, cuando delega, lanza el subagente general del runtime y le dice qué skill de rol cargar.
 
 El orchestrator declara un nivel por rol y, cuando hace falta, un esfuerzo. El nivel no codifica un modelo: esta página solo fija cómo se resuelve y dónde vive la escalera.
 

@@ -5,14 +5,14 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { runInstall } from "../src/install.js";
 import { readManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 
-const ROLES = ["analyst", "generalist", "implementer", "reviewer", "security-auditor", "simplifier"] as const;
+const ROLES = ["analyst", "implementer", "reviewer", "security-auditor", "simplifier"] as const;
 const ROOT = path.resolve("stack/skills");
 
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-role-skills-")); });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
-it("keeps the six roles as portable skills: only name and description, no model or runtime", () => {
+it("keeps the five roles as portable skills: only name and description, no model or runtime", () => {
   for (const role of ROLES) {
     const source = fs.readFileSync(path.join(ROOT, role, "SKILL.md"), "utf8");
     const match = /^---\n([\s\S]*?)\n---\n/.exec(source);

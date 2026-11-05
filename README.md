@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: twenty-one local skills, no agents of its own and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
+Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: twenty local skills, no agents of its own and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
 
 ## Quick start
 
@@ -46,9 +46,9 @@ Missing runtimes are not installed when you open a screen. Updating configuratio
 
 ## Shared canon
 
-**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, organic-growth, project-architect, retro, second-opinion, skill-creator, to-spec, visual-director, what and xreview, plus the six work roles: implementer, generalist, analyst, reviewer, security-auditor and simplifier. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
+**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, organic-growth, project-architect, retro, second-opinion, skill-creator, to-spec, visual-director, what and xreview, plus the five work roles: implementer, analyst, reviewer, security-auditor and simplifier. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
 
-**Roles:** the six work roles are skills, not agents. The primary agent belongs to the runtime and loads `orchestrator`; when it delegates, it uses the runtime's general subagent and tells it which role skill to load. Stack projects no agent file and does not save models per agent. The orchestrator declares a level and effort per role, and the level-to-model ladder lives in your global instructions for each runtime: see [delegation](docs/references/delegation.md).
+**Roles:** the five work roles are skills, not agents. The primary agent belongs to the runtime and loads `orchestrator`; when it delegates, it uses the runtime's general subagent and tells it which role skill to load. Stack projects no agent file and does not save models per agent. The orchestrator declares a level and effort per role, and the level-to-model ladder lives in your global instructions for each runtime: see [delegation](docs/references/delegation.md).
 
 A single profile serves both human and programmatic use. Native APIs (SDK/CLI, Codex app-server, OpenCode v2 server, Pi RPC) allow structured operations according to each host, not a universal takeover of an open TTY. Herdr is neither installed nor configured: an existing personal integration is kept.
 

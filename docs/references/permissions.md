@@ -51,7 +51,7 @@ La alternativa es quitar esa línea `deny` del perfil en `config.toml`, tras un 
 
 ## Roles
 
-- Los seis roles son skills; Stack no crea agentes ni aplica permisos por rol.
+- Los cinco roles son skills; Stack no crea agentes ni aplica permisos por rol.
 - `analyst`, `reviewer`, `security-auditor` y `simplifier` deben limitarse a leer: es una instrucción de la skill. El subagente general conserva las tools del padre, incluidos shell y escritura.
 - El shell no queda cubierto por los denies de lectura y edición de secretos, así que un rol de análisis que ejecute comandos puede leer rutas que esas reglas deniegan. El orchestrator comprueba `git status` después de un lector.
 - Codex hereda el sandbox del padre. Ningún runtime aísla por rol.
