@@ -5,18 +5,12 @@ import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, ConfigOwnershipChange } from "./types.js";
 import { BROWSER_CONTROL_GUIDANCE, BROWSER_CONTROL_INCOMPATIBLE_WARNING, isBrowserControlCommand, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
-import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
-import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
+import type { CanonicalMcp } from "../lib/canonical.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, resolveOpenCodeConfigDir, samePath } from "../lib/paths.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { editJsonc, editJsoncArray, parseJsoncObject, upsertJson } from "../lib/filemerge.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
-
-/** Escalar YAML siempre double-quoted: válido y a prueba de ':' o comillas. */
-function yamlString(value: string): string {
-  return JSON.stringify(value);
-}
 
 function readMcpConfig(file: string): string | null {
   let content: string;
@@ -523,41 +517,11 @@ export const opencodeAdapter: Adapter = {
     const agentsHome = isRealConfigDir ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
-      agentsDir: path.join(configDir, "agents"),
       skillsDir: path.join(agentsHome, ".agents", "skills"),
       pluginsDir: path.join(configDir, "plugins"),
       scriptsDir: path.join(configDir, "scripts"),
     };
   },
-
-  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
-    const lines: string[] = [`description: ${yamlString(agent.description)}`, `mode: ${agent.mode}`];
-
-    const selected = agentModelChoice(models, agent.name);
-    // v2 usa un único `provider/model#variant`. Se serializa con yamlString
-    // (JSON double-quoted) para que un modelo manual con comillas o saltos de
-    // línea no inyecte campos, comentarios ni delimitadores en el frontmatter.
-    const modelRef = selected.variant ? `${selected.model}#${selected.variant}` : selected.model;
-    if (selected.model) lines.push(`model: ${yamlString(modelRef!)}`);
-
-    // Reglas nativas: los lectores no reciben shell/escritura y ningún hijo delega.
-    const rules: PermissionRule[] = [];
-    if (agent.readonly) rules.push({ action: "edit", resource: "*", effect: "deny" });
-    if (agent.bash === "none") {
-      rules.push({ action: "shell", resource: "*", effect: "deny" });
-    }
-    if (!agent.spawn) rules.push({ action: "subagent", resource: "*", effect: "deny" });
-    if (rules.length > 0) lines.push(`permissions: ${JSON.stringify(rules)}`);
-
-    return [
-      {
-        file: `${agent.name}.md`,
-        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
-        kind: "agent" as const,
-      },
-    ];
-  },
-
 
   adaptSystemPromptSections(sections, ctx) {
     const adapted = { ...sections };

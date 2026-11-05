@@ -1,6 +1,6 @@
 # Verificación proporcional
 
-Implementer posee producción y pruebas. Política de testing/TDD en [su contrato canónico](../../stack/agents/implementer.md): escoger riesgo real, protección existente y seam más cercano; no suite/snapshot de prosa por ceremonia ni cadena tester/implementer.
+Implementer posee producción y pruebas. Política de testing/TDD en [su skill](../../stack/skills/implementer/SKILL.md): escoger riesgo real, protección existente y seam más cercano; no suite/snapshot de prosa por ceremonia ni cadena tester/implementer.
 
 ## Comandos del repo
 

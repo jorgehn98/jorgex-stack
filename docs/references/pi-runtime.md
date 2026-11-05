@@ -4,11 +4,11 @@ Stack utiliza el host oficial Pi y sus gestores nativos. No stage privado, lock 
 
 Aplicar configuración deliberadamente ejecuta `pi update --all` y registra paquetes sin pins: pi-subagents, @juicesharp/rpiv-ask-user-question, pi-web-access, @gotgenes/pi-permission-system, gentle-engram, @narumitw/pi-goal y compact-tools. Stack comprueba el registro nativo y comunica fallos parciales; no poda entradas npm ajenas ni deshace toda la operación si falla una extensión. compact-tools es el paquete visual independiente del repo Pi: su publicación corresponde al titular y es prerrequisito de instalación desde registry, no queda probada por un pack local.
 
-Stack copia la cabecera local `stack/assets/pi/jorgex-header.ts` a `~/.pi/agent/extensions/jorgex-header.ts`, no la instala como otro paquete. Pi conserva tema/defaultProvider/defaultModel/defaultThinkingLevel elegidos por usuario. Herdr no se instala ni modifica. Agentes en `~/.pi/agent/agents`; skills comunes en `~/.agents/skills`; instrucciones globales en `~/.pi/agent/AGENTS.md`. Las variables nativas pueden cambiar rutas.
+Stack copia la cabecera local `stack/assets/pi/jorgex-header.ts` a `~/.pi/agent/extensions/jorgex-header.ts`, no la instala como otro paquete. Pi conserva tema/defaultProvider/defaultModel/defaultThinkingLevel elegidos por usuario. Herdr no se instala ni modifica. Skills comunes en `~/.agents/skills`; instrucciones globales en `~/.pi/agent/AGENTS.md`. Stack no proyecta agentes. Las variables nativas pueden cambiar rutas.
 
 Engram usa tools/hooks oficiales de gentle-engram, sin MCP adicional ni variante TypeBox de Stack. El corte explícito retira jorgex-pi con el gestor nativo; un Engram MCP personalizado bloquea la retirada selectiva y exige resolución explícita, nunca se borra por inferencia. No hay migración universal de contratos antiguos.
 
-Browser Control se registra como MCP stdio; su proveedor posee relay/extension/attach. Ver [browser](browser-automation.md). Pi RPC consulta modelos y el estado activo sin cambiarlo; [modelos](models.md).
+Browser Control se registra como MCP stdio; su proveedor posee relay/extension/attach. Ver [browser](browser-automation.md). Pi RPC consulta modelos y el estado activo sin cambiarlo; Stack ya no edita modelos por agente: [delegación](delegation.md).
 
 ## Permisos y límites
 
@@ -16,9 +16,9 @@ Browser Control se registra como MCP stdio; su proveedor posee relay/extension/a
 
 Pi utiliza el gestor configurado por el usuario. Si es pnpm11, su espera predeterminada de24h puede seleccionar una versión anterior a `latest`; Stack no desactiva esa protección ni promete haber probado una release que el gestor no instaló.
 
-Lectores Stack usan tools `read, grep, find, ls`; implementer/generalist incluyen bash/edit/write. Sin delegación anidada. Pi tiene seis archivos propios, no modifica builtin del proveedor. El sistema de permisos es extensión nativa. Si `extensions/pi-permission-system/config.json` no existe, Stack lo crea con `yoloMode` y deny de rutas de secretos; uno existente se conserva intacto y la desinstalación no lo retira. Doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
+Stack no proyecta agentes ni aplica tools por rol: los roles son skills y la solo lectura es una instrucción. Los built-in de Pi no se modifican. El sistema de permisos es extensión nativa. Si `extensions/pi-permission-system/config.json` no existe, Stack lo crea con `yoloMode` y deny de rutas de secretos; uno existente se conserva intacto y la desinstalación no lo retira. Doctor lee su configuración y no afirma enforcement. [Permisos](permissions.md).
 
-**Contexto de los subagentes:** pi-subagents arranca los agentes propios con prompt limpio. Cada uno declara `inheritProjectContext` e `inheritGlobalContext` para recibir los `AGENTS.md` de proyecto y global, y `skills: lean-code` en implementer y simplifier; no heredan el catálogo completo de skills. pi-subagents 0.73.1 resuelve esa skill desde `~/.agents/skills`; no se ha probado en una sesión real.
+**Skills en subagentes:** los built-in de pi-subagents arrancan con `inheritSkills: false`. Stack escribe `subagents.agentOverrides.delegate.inheritSkills: true` en `settings.json` solo si la hoja falta, para que el subagente general vea el catálogo y pueda cargar la skill del rol; un valor existente se conserva. Detalle en [delegación](delegation.md).
 
 **Timeout temporal de dos horas:** al Aplicar Configuración/Todo, Stack siembra `timeoutMs: 7200000` en la configuración nativa `~/.pi/agent/extensions/subagent/config.json` **solo si el campo está ausente**. Conserva cualquier elección previa (también si vale dos horas), sin reclamarla por igualdad, y los demás campos. Hay backup antes de modificar un archivo existente; reaplicar no produce cambios. Desinstalar retira únicamente el campo creado por Stack que siga valiendo 7200000; un override personal se conserva.
 

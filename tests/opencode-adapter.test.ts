@@ -5,7 +5,6 @@ import { parse as parseJsonc } from "jsonc-parser";
 import { afterEach, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import type { AgentModelChoices } from "../src/lib/agent-model.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];
@@ -19,7 +18,6 @@ function opencodeContext(configDir: string) {
     stackDir: stackRoot(),
     configDir,
     engramBin: null,
-    models: MODELS,
     warnings: [],
   };
 }
@@ -41,10 +39,6 @@ function configOwnership(actions: ReturnType<typeof opencodeAdapter.planMainConf
   if (action?.kind !== "write") throw new Error(`Missing write action for ${target}`);
   return new Set((action.configOwnership ?? []).filter((change) => change.owned).map((change) => change.field));
 }
-
-/** Delimitador del frontmatter del agente: recorte, no un parser YAML. */
-const MODELS: AgentModelChoices = {
-};
 
 
 describe("opencodeAdapter Context7 registration safety", () => {

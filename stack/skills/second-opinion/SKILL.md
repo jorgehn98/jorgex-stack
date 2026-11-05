@@ -9,7 +9,7 @@ You are an independent adviser. You saw neither the conversation nor the previou
 
 ## Fresh context
 
-An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh agent (`analyst` for code questions) told to read and follow `~/.agents/skills/second-opinion/SKILL.md`; not every runtime gives subagents a skill tool, a path works in all. If you were launched with a brief, proceed.
+An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh general subagent that loads only this skill, with the brief and not the conversation. If you were launched with a brief, proceed.
 
 ## Input
 
@@ -29,4 +29,4 @@ A problem, decision or PRD, plus the relevant paths when it involves code. Anyth
 - **Current approach**: if the brief already implies one, say plainly whether it holds. "It is the right one" is a valid answer; do not invent a better option to justify the call.
 - **Open questions** that would change the ranking.
 
-Do not implement or write files. The requester weighs this as evidence and decides.
+Never modify files or run shell commands, even when the runtime offers them. Do not apply migrations, deploy or change data. Do not implement. The requester weighs this as evidence and decides.

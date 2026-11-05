@@ -29,24 +29,24 @@ beforeEach(() => {
 });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-it("projects Pi twice without acquisition and preserves choices, foreign packages and official host layout", async () => {
+it("projects Pi twice without acquisition and preserves foreign settings and official host layout", async () => {
   const config = path.join(root, "pi-agent");
   fs.mkdirSync(path.join(config, "install", "releases"), { recursive: true });
   fs.writeFileSync(path.join(config, "settings.json"), '{"packages":["npm:personal"],"defaultModel":"personal"}');
   const execute = vi.fn(() => "");
   const opts = { runtimes: ["pi"] as const, targetDir: root, dryRun: false, yes: true, execute };
   expect(await runInstall({ ...opts, runtimes: [...opts.runtimes] })).toBe(0);
-  const agent = path.join(config, "agents", "implementer.md");
-  fs.writeFileSync(agent, fs.readFileSync(agent, "utf8").replace("---\n", "---\nmodel: personal\n"));
   expect(await runInstall({ ...opts, runtimes: [...opts.runtimes] })).toBe(0);
-  expect(fs.readFileSync(agent, "utf8")).toContain("model: personal");
+  const skill = path.join(root, ".agents", "skills", "lean-code", "SKILL.md");
+  expect(fs.existsSync(skill)).toBe(true);
+  expect(fs.existsSync(path.join(config, "agents"))).toBe(false);
   expect(fs.readFileSync(path.join(config, "settings.json"), "utf8")).toContain('"npm:personal"');
   expect(fs.existsSync(path.join(config, "install", "releases"))).toBe(true);
   expect(execute).not.toHaveBeenCalled();
   const manifest = readManifest(path.join(root, ".jorgex-stack", "manifest.json"));
-  expect(manifest.runtimes.pi?.owned).toContain(agent);
+  expect(manifest.runtimes.pi?.owned).toContain(skill);
   expect(await runUninstall({ runtimes: ["pi"], targetDir: root, dryRun: false, yes: true, removeEngram: false })).toBe(0);
-  expect(fs.existsSync(agent)).toBe(false);
+  expect(fs.existsSync(skill)).toBe(false);
   expect(fs.existsSync(path.join(config, "install", "releases"))).toBe(true);
 });
 
@@ -60,14 +60,14 @@ it("uses official unpinned Pi packages and native update, with no setup pi or pr
     if (args[0] === "remove") {
       const file = path.join(configDir, "settings.json");
       const settings = JSON.parse(fs.readFileSync(file, "utf8"));
-      settings.packages = settings.packages.filter((source: string) => source !== args[1]);
+      settings.packages = (settings.packages ?? []).filter((source: string) => source !== args[1]);
       fs.writeFileSync(file, JSON.stringify(settings));
     }
     if (args[0] === "install") {
       fs.mkdirSync(configDir, { recursive: true });
       const file = path.join(configDir, "settings.json");
       const settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { packages: [] };
-      settings.packages.push(args[1]); fs.writeFileSync(file, JSON.stringify(settings));
+      (settings.packages ??= []).push(args[1]); fs.writeFileSync(file, JSON.stringify(settings));
     }
     return "";
   });
@@ -98,7 +98,7 @@ it("reports a package failure as partial and retains completed native registrati
     if (args[0] === "install") {
       const file = path.join(root, "pi-agent", "settings.json"); fs.mkdirSync(path.dirname(file), { recursive: true });
       const settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { packages: [] };
-      settings.packages.push(args[1]); fs.writeFileSync(file, JSON.stringify(settings));
+      (settings.packages ??= []).push(args[1]); fs.writeFileSync(file, JSON.stringify(settings));
     }
     return "";
   };
@@ -265,13 +265,13 @@ it("doctor is read-only and checks the same Pi projection rather than a private 
 });
 
 it("preserves foreign files even when equal and blocks linked projection ancestors", async () => {
-  const configDir = path.join(root, "pi-agent"); fs.mkdirSync(path.join(configDir, "agents"), { recursive: true });
-  const foreign = path.join(configDir, "agents", "implementer.md"); fs.writeFileSync(foreign, "personal");
+  const configDir = path.join(root, "pi-agent"); fs.mkdirSync(path.join(configDir, "extensions"), { recursive: true });
+  const foreign = path.join(configDir, "extensions", "jorgex-header.ts");
+  fs.copyFileSync(path.resolve("stack/assets/pi/jorgex-header.ts"), foreign);
   expect(await runInstall({ runtimes: ["pi"], targetDir: root, dryRun: false, yes: true })).toBe(0);
-  expect(fs.readFileSync(foreign, "utf8")).toBe("personal");
   expect(readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes.pi?.owned).not.toContain(foreign);
   const destination = path.join(root, "foreign"); fs.mkdirSync(destination);
-  fs.rmSync(path.join(configDir, "agents"), { recursive: true }); fs.symlinkSync(destination, path.join(configDir, "agents"), "dir");
+  fs.rmSync(path.join(configDir, "extensions"), { recursive: true }); fs.symlinkSync(destination, path.join(configDir, "extensions"), "dir");
   expect(await runInstall({ runtimes: ["pi"], targetDir: root, dryRun: false, yes: true })).toBe(1);
   expect(fs.readdirSync(destination)).toEqual([]);
 });

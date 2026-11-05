@@ -55,7 +55,7 @@ async function apply(runtime: Runtime, failing: (bin: string, args: string[]) =>
       const file = path.join(configDir("pi"), "settings.json");
       fs.mkdirSync(path.dirname(file), { recursive: true });
       const settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : { packages: [] };
-      settings.packages.push(args[1]); fs.writeFileSync(file, JSON.stringify(settings));
+      (settings.packages ??= []).push(args[1]); fs.writeFileSync(file, JSON.stringify(settings));
     }
     return "";
   };
@@ -95,7 +95,7 @@ it.each(RUNTIMES.flatMap((runtime) => [[runtime, "pnpm fails"], [runtime, "pnpm 
     expect(warnings()).toContain("@opencode-ai/browser-control");
     expect(browserControlEntry(runtime)).toBeUndefined();
     expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
-    expect(fs.existsSync(path.join(configDir(runtime), "agents", "implementer.md"))).toBe(true);
+    expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(true);
     const prompt = fs.readFileSync(promptFile(runtime), "utf8");
     expect(prompt).toContain("<!-- jorgex:browser -->");
     expect(prompt).not.toContain("browser-control-mcp");
@@ -147,7 +147,7 @@ it.each(RUNTIMES.flatMap((runtime) => entries[runtime].incompatible.map((entry) 
     expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
     expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
     expect(warn.mock.calls.filter(([message]) => /Browser Control/i.test(String(message)))).toHaveLength(1);
-    expect(fs.existsSync(path.join(configDir(runtime), "agents", "implementer.md"))).toBe(true);
+    expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(true);
     expect(fs.readFileSync(promptFile(runtime), "utf8")).not.toContain("browser-control-mcp");
     expect(await runDoctor({ runtimes: [runtime], targetDir: root, opencodeTargetMajor: 2 })).toBe(0);
   });

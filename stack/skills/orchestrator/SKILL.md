@@ -11,7 +11,7 @@ Own the result, not a procession of agents.
 
 - **Direct**: clear goal, understood contract, bounded scope and sufficient verification. It needs an agreement and proportionate verification, not formal documents.
 - **Formal**: anything else. Use `to-spec` to prepare `work/{name}/PRD.md`, `plan.md` and `tasks/*.md`, and present the plan for approval before implementing.
-- Formal work with a real design fork (several plausible approaches, a contract change, a migration or a costly reversal): have `to-spec` write only the PRD and stop, then launch an `analyst` told to read and follow `~/.agents/skills/second-opinion/SKILL.md` (do not read it yourself). Give it the PRD, the key paths and a neutral problem statement without your preferred approach. Weigh its answer against the PRD's constraints and your judgment, update the PRD's technical decisions, then have `to-spec` finish plan and tasks. Skip it when the approach is obvious.
+- Formal work with a real design fork (several plausible approaches, a contract change, a migration or a costly reversal): have `to-spec` write only the PRD and stop, then launch the runtime's general subagent with the `analyst` skill, told to read and follow `~/.agents/skills/second-opinion/SKILL.md` (do not read it yourself). Give it the PRD, the key paths and a neutral problem statement without your preferred approach. Weigh its answer against the PRD's constraints and your judgment, update the PRD's technical decisions, then have `to-spec` finish plan and tasks. Skip it when the approach is obvious.
 - Small is not automatically safe: configuration, publication, permissions and security changes can be high risk in few lines. Do not route by file count or elapsed time.
 - If scope, risk or uncertainty grows, promote to formal before continuing.
 - A material scope change updates the PRD first, then plan and tasks, and needs approval of that change, not a restarted interview.
@@ -20,27 +20,31 @@ Own the result, not a procession of agents.
 
 - Combine questions with targeted code inspection. Use `grilling` when product decisions are unclear; investigate facts yourself.
 - Inspect callers, constraints and existing coverage before choosing a solution; use `lean-code` for code-bearing work.
-- An analyst's recommendation is evidence, not an order. Close scope, approach, invariants and test seam yourself before delegating.
+- A recommendation from the `analyst` role is evidence, not an order. Close scope, approach, invariants and test seam yourself before delegating.
 - Stop clarifying once the remaining choices do not change the result or the risk.
 
-## Who does what
+## Roles
 
-| Agent | Use it for | Access |
-|---|---|---|
-| implementer | A bounded change with its tests and local docs | Writes |
-| generalist | Bounded documentation, translation or mechanical work | Writes |
-| analyst | One concrete question about the codebase before deciding | Read-only |
-| reviewer | Correctness, coverage, types, errors and comments of a candidate | Read-only |
-| security-auditor | Authorization, permissions, sensitive data and trust boundaries | Read-only |
-| simplifier | Material complexity in a change, using `lean-code` | Read-only |
+Roles are skills, not agents. Load one yourself when you are going to do the work; when you delegate, the child loads it.
 
-- Work directly when a handoff adds little value.
-- Readers receive the diff and history from you; they do not use a shell.
-- For a direct simplification, assign implementer with `lean-code`; no prior simplifier pass is required.
+| Skill | Use it for | Level | Effort |
+|---|---|---|---|
+| `implementer` | A bounded change with its tests and local docs | N3 | medium |
+| `analyst` | One concrete question about the codebase before deciding | N2 | medium |
+| `reviewer` | Correctness, coverage, types, errors and comments of a candidate | N3 | high |
+| `security-auditor` | Authorization, permissions, sensitive data and trust boundaries | N4 | medium |
+| `simplifier` | Material complexity in a change, using `lean-code` | N2 | medium |
+
+- **Levels**: N1 mechanical, N2 standard, N3 high, N4 maximum. N1 is also the level for delegated work that needs no role skill at all. Resolve the level with the ladder defined in the user's global instructions for this runtime (for example `N3 = ...`). Pass `model` and `effort` to the child only when that ladder defines them; never guess a model ID or an effort name. Without a ladder, the child inherits your model, and you say so once.
+- The roles of analysis (`analyst`, `reviewer`, `security-auditor`, `simplifier`) must not modify files or run shell commands. That is an instruction, not an enforced boundary: after a reader returns, check `git status` yourself.
 
 ## Delegate
 
-- Give the worker the bounded outcome, relevant files, closed decisions, expected verification and the exact task path. Do not copy the whole conversation.
+- Use the runtime's general subagent: `general-purpose` in Claude Code, `worker` in Codex, `general` in OpenCode, `delegate` in Pi. Do not delegate to a read-only explorer: in at least one runtime it cannot load skills.
+- Name the role skill by its exact ID, and give the worker the bounded outcome, relevant files, closed decisions, expected verification and the exact task path. Do not copy the whole conversation.
+- Work directly when a handoff adds little value.
+- Readers receive the diff and history from you; they do not run Git or shell.
+- For a direct simplification, load `implementer` with `lean-code`; no prior `simplifier` pass is required.
 - One writer per worktree, and that worktree is its only write root. After a writer finishes, confirm the main checkout is still clean: a prompt is not a boundary.
 - Writers run in parallel only when they do not touch the same files; readers can.
 - Each writer owns implementation and its tests. Reviewers do not run after every edit, test or commit.

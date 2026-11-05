@@ -9,7 +9,6 @@ import { readTomlSection } from "../src/lib/filemerge.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 let tmp: string;
@@ -52,7 +51,6 @@ describe("permisos por defecto fresh", () => {
     stackDir: stackRoot(),
     configDir: tmp,
     engramBin: null,
-    models: DEFAULT_MODEL_MAP[id]!,
     warnings: [],
   });
   const mcp = () => loadCanonicalMcp(stackRoot());

@@ -5,15 +5,12 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { readTomlSection, removeMarkdownSection, removeTomlSection, upsertMarkdownSection, upsertTomlSection } from "../src/lib/filemerge.js";
 import { removeNativeHooks } from "../src/lib/hooks-format.js";
-import { loadCanonicalAgents, loadCanonicalMcp } from "../src/lib/canonical.js";
+import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
-const OPEN_CODE_MODELS = {
-};
 
 describe("removeMarkdownSection", () => {
   it("install → uninstall deja el contenido del usuario intacto", () => {
@@ -90,7 +87,6 @@ describe("uninstall preserva Engram por defecto (D7)", () => {
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
       ownedMcpServers: new Set(["context7"]),
       ownedFiles: new Set([path.join(pluginsDir, "hooks.ts"), path.join(pluginsDir, "worktree.ts")]),
@@ -130,7 +126,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
       stackDir: stackRoot(),
       configDir,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
       ownedMcpServers: new Set(["context7"]),
     }).find((candidate) => candidate.target === mainFile);
@@ -143,7 +138,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
       stackDir: stackRoot(),
       configDir,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
     }).find((candidate) => candidate.target === mainFile);
     expect(unownedAction).toMatchObject({ kind: "write" });
@@ -174,7 +168,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
       ownedMcpServers: new Set(["context7"]),
     }).find((candidate) => candidate.target === configFile);
@@ -188,7 +181,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
     }).find((candidate) => candidate.target === configFile);
     expect(unownedAction).toMatchObject({ kind: "write" });
@@ -218,7 +210,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
       ownedMcpServers: new Set(["context7"]),
     }).find((candidate) => candidate.target === configFile);
@@ -233,7 +224,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
       stackDir: stackRoot(),
       configDir: tmp,
       engramBin: null,
-      models: OPEN_CODE_MODELS,
       warnings: [],
     }).find((candidate) => candidate.target === configFile);
     expect(unownedAction).toMatchObject({ kind: "write" });
@@ -242,36 +232,6 @@ describe("uninstall preserva una entrada Context7 owned que el usuario modificó
     expect(unownedResult.mcp.context7).toEqual(previous.mcp.context7);
     expect(unownedAction).not.toHaveProperty("mcpOwnership");
     fs.rmSync(tmp, { recursive: true, force: true });
-  });
-});
-
-describe("paridad entre adapters (los seis subagentes canónicos)", () => {
-  const agents = loadCanonicalAgents(path.join(stackRoot(), "agents"));
-
-  it("hay seis subagentes y ningún primary propio", () => {
-    expect(agents).toHaveLength(6);
-    expect(agents.every((agent) => agent.mode === "subagent")).toBe(true);
-  });
-
-  it.each([
-    ["opencode", opencodeAdapter],
-    ["claude-code", claudeCodeAdapter],
-    ["codex", codexAdapter],
-  ] as const)("%s renderiza todos los agentes con el body íntegro", (id, adapter) => {
-    const models = id === "opencode" ? OPEN_CODE_MODELS : DEFAULT_MODEL_MAP[id]!;
-    for (const agent of agents) {
-      const rendered = adapter.renderAgent(agent, models);
-      expect(rendered.length).toBeGreaterThan(0);
-      // El contenido canónico viaja a todos los runtimes (test de paridad).
-      const marker = agent.body.trim().split("\n")[0]!;
-      for (const artifact of rendered) {
-        expect(artifact.content).toContain(marker.replace(/^#+\s*/, ""));
-      }
-    }
-  });
-
-  it("orchestrator se descubre como skill, no como agente propio", () => {
-    expect(agents.some((agent) => agent.name === "orchestrator")).toBe(false);
   });
 });
 

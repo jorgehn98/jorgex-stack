@@ -36,16 +36,17 @@ Resolve the base in this order; never default to `main`:
 | simplifier | introduces or touches material complexity |
 
 - Zero to three reviewers. Zero does not waive deterministic verification.
+- Launch one general subagent per reviewer and tell it to load that skill by name. Never load a reviewer skill in the agent holding the conversation: that is not an independent review.
 - Give each one its primary scope (paths or hunks and the risk it owns) and the support context it needs, not the whole parent conversation.
-- Hand over the diff text and the SHAs: reviewers cannot run Git.
-- All reviewers are read-only. The existing implementer applies approved fixes and simplifications. No comment writer, tester or specialist chain.
+- Tell the reviewers not to run Git; hand over the diff text and the SHAs.
+- Reviewers must not modify files. The existing `implementer` applies approved fixes and simplifications. No comment writer, tester or specialist chain.
 - A writer finishing, a commit, a test run or marking Ready does not trigger a review.
 
 ## 4. Consolidate
 
 - Validate premises; reject duplicates and impossible scenarios.
 - Distinguish a missed bug, a regression introduced by a fix and an optional suggestion.
-- A blocking finding whose premise you cannot check yourself from the code at hand may get one independent check with fresh context (analyst: the finding and the diff) before the fix is ordered. Skip it when reading two files settles it; never run it for non-blocking findings.
+- A blocking finding whose premise you cannot check yourself from the code at hand may get one independent check with fresh context (the `analyst` role, with the finding and the diff) before the fix is ordered. Skip it when reading two files settles it; never run it for non-blocking findings.
 - Fix real blockers within scope and ask before a material scope expansion.
 - Do not turn optional suggestions into compulsory refactors or pursue zero observations.
 

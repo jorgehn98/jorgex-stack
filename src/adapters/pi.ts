@@ -1,11 +1,10 @@
-import { agentModelChoice } from "../lib/agent-model.js";
 import { editJsonc, upsertJson } from "../lib/filemerge.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { planOwnedProjection } from "../lib/owned-projection.js";
 import fs from "node:fs";
 import path from "node:path";
 import { BROWSER_CONTROL_GUIDANCE, BROWSER_CONTROL_INCOMPATIBLE_WARNING, isBrowserControlCommand, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS } from "../lib/canonical.js";
-import type { Adapter, FileAction } from "./types.js";
+import type { Adapter, FileAction, InstallContext } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { detectPi } from "../lib/detect.js";
 import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
@@ -14,6 +13,9 @@ const SUBAGENT_CONFIG = "extensions/subagent/config.json";
 const SUBAGENT_TIMEOUT_FIELD = JSON.stringify([SUBAGENT_CONFIG, "timeoutMs"]);
 const SUBAGENT_TIMEOUT_MS = 7200000;
 const PERMISSION_CONFIG = "extensions/pi-permission-system/config.json";
+const SETTINGS_FILE = "settings.json";
+/** pi-subagents' built-ins start with `inheritSkills: false`; delegation needs this leaf. */
+const INHERIT_SKILLS_FIELD = JSON.stringify([SETTINGS_FILE, "subagents", "agentOverrides", "delegate", "inheritSkills"]);
 
 /**
  * Política nativa fresh: `yoloMode` aprueba los ask y conserva los deny
@@ -39,6 +41,47 @@ function readSubagentConfig(file: string) {
   const config: unknown = raw === null ? {} : JSON.parse(raw);
   if (!isRecord(config)) throw new Error("Pi: configuración nativa de subagentes inválida (contenido omitido).");
   return { raw, config };
+}
+
+/**
+ * Pi no hereda el catálogo de skills en sus subagentes built-in. Se activa una sola
+ * hoja, sin reescribir un valor existente ni reclamar el archivo completo.
+ */
+function setDelegateSkills(root: Record<string, unknown>): void {
+  const subs = (root.subagents ??= {}) as Record<string, unknown>;
+  const ov = (subs.agentOverrides ??= {}) as Record<string, unknown>;
+  const del = (ov.delegate ??= {}) as Record<string, unknown>;
+  del.inheritSkills = true;
+}
+
+function planSkillVisibility(ctx: InstallContext): FileAction[] {
+  const target = path.join(ctx.configDir, SETTINGS_FILE);
+  let raw: string | null;
+  try { raw = readTextIfExists(target); }
+  catch { throw new Error("Pi: no se puede leer settings.json; revisa ruta/permisos. No se modifica."); }
+  let settings: unknown = {};
+  if (raw !== null && raw.trim() !== "") {
+    try { settings = JSON.parse(raw); }
+    catch { throw new Error("Pi: settings.json no es JSON válido; corrige o restaura antes de editar."); }
+  }
+  if (!isRecord(settings)) throw new Error("Pi: settings.json debe ser un objeto; corrígelo antes de reintentar.");
+  const subagents = settings.subagents;
+  if (subagents !== undefined && !isRecord(subagents)) throw new Error("Pi: 'subagents' debe ser un objeto; corrígelo antes de reintentar.");
+  const overrides = subagents?.agentOverrides;
+  if (overrides !== undefined && !isRecord(overrides)) throw new Error("Pi: 'subagents.agentOverrides' debe ser un objeto; corrígelo antes de reintentar.");
+  const delegate = overrides?.delegate;
+  if (delegate !== undefined && !isRecord(delegate)) throw new Error("Pi: 'subagents.agentOverrides.delegate' debe ser un objeto; corrígelo antes de reintentar.");
+  const current = delegate?.inheritSkills;
+  if (current !== undefined) {
+    if (current !== true) ctx.warnings.push("Pi: 'subagents.agentOverrides.delegate.inheritSkills' ya está definido sin true; se conserva y los subagentes podrían no ver las skills. Revísalo si delegas roles.");
+    return [];
+  }
+  return [{
+    kind: "write",
+    target,
+    content: raw === null ? upsertJson(null, (root) => { setDelegateSkills(root); }) : editJsonc(raw, (root) => { setDelegateSkills(root); }),
+    configOwnership: [{ field: INHERIT_SKILLS_FIELD, owned: true }],
+  }];
 }
 
 export function piSystemPromptFile(targetDir?: string): string {
@@ -76,6 +119,28 @@ export const piAdapter: Adapter = {
         if (expected && JSON.stringify(current) === JSON.stringify(expected)) delete root.mcpServers[name];
       }
     }) });
+    if (ctx.ownedConfigFields?.has(INHERIT_SKILLS_FIELD)) {
+      const target = path.join(ctx.configDir, SETTINGS_FILE);
+      const raw = readTextIfExists(target);
+      let settings: unknown;
+      try { settings = raw === null ? null : JSON.parse(raw); } catch { settings = null; }
+      const subs = isRecord(settings) ? settings.subagents : undefined;
+      const ov = isRecord(subs) ? subs.agentOverrides : undefined;
+      const del = isRecord(ov) ? ov.delegate : undefined;
+      if (raw !== null && isRecord(del) && del.inheritSkills === true) actions.push({
+        kind: "write", target,
+        content: upsertJson(raw, (root) => {
+          const subs = root.subagents as Record<string, unknown>;
+          const ov = subs.agentOverrides as Record<string, unknown>;
+          const del = ov.delegate as Record<string, unknown>;
+          delete del.inheritSkills;
+          if (Object.keys(del).length === 0) delete ov.delegate;
+          if (Object.keys(ov).length === 0) delete subs.agentOverrides;
+          if (Object.keys(subs).length === 0) delete root.subagents;
+        }),
+        configOwnership: [{ field: INHERIT_SKILLS_FIELD, owned: false }],
+      });
+    }
     if (ctx.ownedConfigFields?.has(SUBAGENT_TIMEOUT_FIELD)) {
       const target = path.join(ctx.configDir, SUBAGENT_CONFIG);
       const { raw, config } = readSubagentConfig(target);
@@ -93,25 +158,10 @@ export const piAdapter: Adapter = {
     const agentsHome = samePath(configDir, piConfigDir) ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
-      agentsDir: path.join(configDir, "agents"),
       skillsDir: path.join(agentsHome, ".agents", "skills"),
       pluginsDir: null,
       scriptsDir: path.join(configDir, "scripts"),
     };
-  },
-
-  renderAgent(agent, models) {
-    const selected = agentModelChoice(models, agent.name);
-    const choices = `${selected.model ? `model: ${JSON.stringify(selected.model)}\n` : ""}${selected.variant ? `thinking: ${JSON.stringify(selected.variant)}\n` : ""}`;
-    const tools = agent.readonly ? "read, grep, find, ls" : "read, grep, find, ls, bash, edit, write";
-    // pi-subagents arranca cada agente propio con prompt limpio: sin estos
-    // campos no ve AGENTS.md de proyecto/global ni la skill que su prompt nombra.
-    const context = `inheritProjectContext: true\ninheritGlobalContext: true\n${agent.body.includes("`lean-code`") ? "skills: lean-code\n" : ""}`;
-    return [{
-      kind: "agent",
-      file: `${agent.name}.md`,
-      content: `---\nname: ${agent.name}\ndescription: ${JSON.stringify(agent.description)}\ntools: ${tools}\n${choices}${context}allowedAgents:\nallowNestedSubagents: false\n---\n${agent.body}`,
-    }];
   },
 
   planAdditionalResources(ctx) {
@@ -167,7 +217,7 @@ export const piAdapter: Adapter = {
     if (permissionActions.length > 0) {
       ctx.warnings.push("Pi: fresh permission policy enables yoloMode and denies only secret paths; enforcement belongs to the native extension and is not a sandbox.");
     }
-    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }, ...subagentActions, ...permissionActions];
+    return [{ kind: "write", target, content: nativeContent, mcpOwnership: ownership }, ...subagentActions, ...permissionActions, ...planSkillVisibility(ctx)];
   },
 
 

@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from "vitest";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { readTomlSection, removeTomlRootKeyIfExact, upsertTomlRootKeyIfMissing, upsertTomlSection } from "../src/lib/filemerge.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 
 const tempDirs: string[] = [];
@@ -19,7 +18,6 @@ function codexContext(configDir: string) {
     stackDir: stackRoot(),
     configDir,
     engramBin: null,
-    models: DEFAULT_MODEL_MAP.codex,
     warnings: [],
   };
 }

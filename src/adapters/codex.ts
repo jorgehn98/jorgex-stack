@@ -2,8 +2,7 @@ import { removeSystemPromptSections } from "../lib/system-prompt-sections.js";
 import path from "node:path";
 import fs from "node:fs";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, ConfigOwnershipChange } from "./types.js";
-import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
-import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
+import type { CanonicalMcp } from "../lib/canonical.js";
 import { detectCodex } from "../lib/detect.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
 import { HOME, samePath } from "../lib/paths.js";
@@ -35,16 +34,6 @@ function readMcpConfig(file: string): string | null {
   }
 }
 
-
-/**
- * Bloques largos como literal multiline (''' no interpreta escapes: los
- * backslashes y comillas del markdown viajan intactos). Fallback a basic
- * string si el contenido contiene ''' (no interpretable como literal).
- */
-function tomlMultiline(value: string): string {
-  if (value.includes("'''")) return JSON.stringify(value);
-  return `'''\n${value.replace(/\r\n/g, "\n").trim()}\n'''`;
-}
 
 function stdioMcpSection(server: CanonicalMcp["servers"][string]): string {
   const args = (server.args ?? []).map(tomlString).join(", ");
@@ -255,29 +244,12 @@ export const codexAdapter: Adapter = {
     const skillsDir = path.join(agentsHome, ".agents", "skills");
     return {
       systemPromptFile: path.join(configDir, "AGENTS.md"),
-      agentsDir: path.join(configDir, "agents"),
       skillsDir,
       // Los custom prompts de Codex están deprecados: los commands se
       pluginsDir: null,
       scriptsDir: path.join(configDir, "scripts"),
     };
   },
-
-  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
-    const selected = agentModelChoice(models, agent.name);
-
-    const lines = [
-      `name = ${tomlString(agent.name)}`,
-      `description = ${tomlString(agent.description)}`,
-    ];
-    if (selected.model) lines.push(`model = ${tomlString(selected.model)}`);
-    if (selected.variant) lines.push(`model_reasoning_effort = ${tomlString(selected.variant)}`);
-    // Codex hereda el sandbox del padre; un rol no impone aislamiento por agente.
-    lines.push(`developer_instructions = ${tomlMultiline(agent.body)}`);
-
-    return [{ file: `${agent.name}.toml`, content: lines.join("\n") + "\n", kind: "agent" as const }];
-  },
-
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     const file = path.join(ctx.configDir, "config.toml");

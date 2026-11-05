@@ -4,7 +4,7 @@
 
 - Trabajo ordinario sin prompts de aprobación (Claude, en modo automático, los pide tras bloqueos repetidos): lectura, edición, shell, red y herramientas.
 - Únicos denies de Stack: lectura y edición de rutas de secretos.
-- Los subagentes lectores conservan sus restricciones de rol. La política no autoriza merges, publicaciones ni ampliar el encargo.
+- Los roles de análisis no modifican archivos ni ejecutan shell: es una instrucción de la skill, no una frontera que Stack imponga. La política no autoriza merges, publicaciones ni ampliar el encargo.
 - No es un sandbox: un proceso arbitrario puede leer lo que las reglas de herramientas no ven, y el agente puede editar su propio archivo de política, que dejaría de aplicarse en la sesión siguiente. Cero credenciales en ejemplos, fixtures y logs.
 
 ## Secretos denegados
@@ -31,7 +31,7 @@ Esta lista aplica a Claude, OpenCode y Pi; Codex es la excepción descrita abajo
 
 **Codex, directorios denegados ausentes:** con Codex CLI 0.160.1 un directorio denegado que no existe hace fallar todos los comandos del sandbox (`bwrap: Destination is not a file <ruta>`); con 0.158.0 funcionaba. Un directorio existente, aunque esté vacío, funciona y se deniega. Por eso, al aplicar la configuración en una instalación real (Instalar/configurar o Actualizar, unidad completa o Configuración), Stack crea los que falten (`~/.ssh`, `~/.aws`) vacíos y con modo 700, y lo avisa. Lo hace en dos casos: al sembrar el perfil fresh, y cuando el `config.toml` existente se conserva pero tiene activo `default_permissions = "jorgex-yolo"` y ese perfil sigue denegando un directorio ausente. El segundo caso repara las máquinas sembradas por versiones que aún no los creaban, antes de que el mismo Aplicar actualice Codex; los permisos del `config.toml` conservado no se modifican.
 
-No cambia los permisos de un directorio que ya exista, no crea nada sobre un enlace simbólico colgante, ni con otro perfil activo, ni si el perfil ya no deniega esa ruta, ni en dry-run, ni al aplicar solo skills o agentes, y no los retira al desinstalar.
+No cambia los permisos de un directorio que ya exista, no crea nada sobre un enlace simbólico colgante, ni con otro perfil activo, ni si el perfil ya no deniega esa ruta, ni en dry-run, ni al aplicar solo skills, y no los retira al desinstalar.
 
 Doctor avisa cuando `default_permissions = "jorgex-yolo"` sigue denegando uno de esos directorios y este no existe (por ejemplo, si se borró después), sin repararlo: es de solo lectura. Se repara aplicando la configuración o a mano:
 
@@ -51,6 +51,7 @@ La alternativa es quitar esa línea `deny` del perfil en `config.toml`, tras un 
 
 ## Roles
 
-- Lectores: analyst, reviewer, security-auditor, simplifier. Escritores: implementer, generalist.
-- Claude, OpenCode y Pi no dan shell, edición ni delegación a los lectores.
-- Codex hereda el sandbox del padre: sus lectores conservan shell y el aislamiento depende de una sesión padre de solo lectura.
+- Los cinco roles son skills; Stack no crea agentes ni aplica permisos por rol.
+- `analyst`, `reviewer`, `security-auditor` y `simplifier` deben limitarse a leer: es una instrucción de la skill. El subagente general conserva las tools del padre, incluidos shell y escritura.
+- El shell no queda cubierto por los denies de lectura y edición de secretos, así que un rol de análisis que ejecute comandos puede leer rutas que esas reglas deniegan. El orchestrator comprueba `git status` después de un lector.
+- Codex hereda el sandbox del padre. Ningún runtime aísla por rol.

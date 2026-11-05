@@ -8,7 +8,6 @@ import { runUninstall } from "../src/uninstall.js";
 import { runDoctor } from "../src/doctor.js";
 import { createBackup, listBackups, restoreBackup } from "../src/lib/backup.js";
 import { readManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
-import { readAgentModel } from "../src/lib/agent-model.js";
 
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(process.platform === "win32" ? os.tmpdir() : "/var/tmp", "jx-t07-scope-")); });
@@ -16,23 +15,20 @@ afterEach(() => { vi.restoreAllMocks(); fs.rmSync(root, { recursive: true, force
 const scopeOptions = () => ({ runtimes: ["pi"] as ["pi"], targetDir: root, dryRun: false, yes: true });
 const manifest = () => readManifest(path.join(root, ".jorgex-stack", "manifest.json"));
 
-it("installing one agent has no native integration effects and preserves unrelated ownership on update", async () => {
+it("installing only shared skills has no native integration effects and preserves ownership on update", async () => {
   const execute = vi.fn(() => "");
-  expect(await runInstall({ ...scopeOptions(), scope: { section: "agents", agent: "implementer" }, execute })).toBe(0);
-  const file = path.join(root, "pi-agent", "agents", "implementer.md");
-  expect(fs.readdirSync(path.dirname(file))).toEqual(["implementer.md"]);
-  expect(fs.existsSync(path.join(root, ".agents", "skills"))).toBe(false);
+  expect(await runInstall({ ...scopeOptions(), scope: { section: "skills" }, execute })).toBe(0);
+  const file = path.join(root, ".agents", "skills", "lean-code", "SKILL.md");
+  expect(fs.existsSync(file)).toBe(true);
+  expect(fs.existsSync(path.join(root, "pi-agent", "agents"))).toBe(false);
   expect(fs.existsSync(path.join(root, "pi-agent", "mcp.json"))).toBe(false);
   expect(execute).not.toHaveBeenCalled();
-  fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("---\n", '---\nmodel: "personal"\nthinking: "personal-effort"\n'));
-  expect(await runInstall({ ...scopeOptions(), scope: { section: "skills" }, execute })).toBe(0);
   const before = manifest().runtimes.pi!.owned;
-  expect(await runInstall({ ...scopeOptions(), scope: { section: "agents", agent: "implementer" }, execute, command: "update" })).toBe(0);
+  expect(await runInstall({ ...scopeOptions(), scope: { section: "skills" }, execute, command: "update" })).toBe(0);
   expect(manifest().runtimes.pi!.owned).toEqual(before);
-  expect(readAgentModel("pi", file).selection).toEqual({ model: "personal", variant: "personal-effort" });
-  expect(await runDoctor({ ...scopeOptions(), scope: { section: "agents", agent: "implementer" } })).toBe(0);
+  expect(await runDoctor({ ...scopeOptions(), scope: { section: "skills" } })).toBe(0);
 });
-it("Pi config removal preserves shared skills, agents and other runtime Browser Control", async () => {
+it("Pi config removal preserves shared skills and other runtime Browser Control", async () => {
   expect(await runInstall(scopeOptions())).toBe(0);
   expect(await runInstall({ ...scopeOptions(), runtimes: ["opencode"], opencodeTargetMajor: 2 })).toBe(0);
   const openCodeMcp = path.join(root, "opencode", "opencode.json");
@@ -42,7 +38,7 @@ it("Pi config removal preserves shared skills, agents and other runtime Browser 
   expect(skills.length).toBeGreaterThan(0);
   expect(await runUninstall({ ...scopeOptions(), scope: { section: "config" }, removeEngram: false })).toBe(0);
   expect(skills.every((file) => fs.existsSync(file))).toBe(true);
-  expect(manifest().runtimes.pi!.owned).toContain(path.join(root, "pi-agent", "agents", "implementer.md"));
+  expect(manifest().runtimes.pi!.owned).toContain(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"));
   expect(fs.readFileSync(openCodeMcp, "utf8")).toBe(raw);
   expect(manifest().runtimes.opencode).toEqual(before.runtimes.opencode);
 });
@@ -52,8 +48,8 @@ it("shared skills removal clears only shared claims across consumers and backs u
   expect(await runUninstall({ ...scopeOptions(), scope: { section: "skills" }, removeEngram: false })).toBe(0);
   expect(manifest().runtimes.opencode!.owned.some((file) => file.includes(`${path.sep}.agents${path.sep}skills${path.sep}`))).toBe(false);
   expect(manifest().runtimes.pi!.mcpOwned).toContain("browser-control");
-  expect(fs.existsSync(path.join(root, "pi-agent", "agents", "implementer.md"))).toBe(true);
   expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(false);
+  expect(fs.existsSync(path.join(root, "pi-agent", "mcp.json"))).toBe(true);
   expect(fs.readdirSync(path.join(root, ".jorgex-stack", "backups")).length).toBeGreaterThan(0);
 });
 it("Todo removal releases shared references so the last selected consumer can retire shared skills", async () => {
@@ -64,26 +60,6 @@ it("Todo removal releases shared references so the last selected consumer can re
   expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(false);
   expect(manifest().runtimes).toEqual({});
 });
-it("removes an individual agent without removing its neighbors or config", async () => {
-  expect(await runInstall(scopeOptions())).toBe(0);
-  const before = manifest().runtimes.pi!;
-  expect(await runUninstall({ ...scopeOptions(), scope: { section: "agents", agent: "implementer" }, removeEngram: false })).toBe(0);
-  expect(fs.existsSync(path.join(root, "pi-agent", "agents", "implementer.md"))).toBe(false);
-  expect(fs.existsSync(path.join(root, "pi-agent", "agents", "reviewer.md"))).toBe(true);
-  expect(manifest().runtimes.pi!.mcpOwned).toEqual(before.mcpOwned);
-});
-
-it.each(["install", "update"] as const)("%s preserves indented Codex model/effort without reading instruction-body fields", async (command) => {
-  const opts = { ...scopeOptions(), runtimes: ["codex" as const], scope: { section: "agents" as const, agent: "implementer" } };
-  expect(await runInstall(opts)).toBe(0);
-  const file = path.join(root, "codex", "agents", "implementer.toml");
-  const before = fs.readFileSync(file, "utf8");
-  fs.writeFileSync(file, '  model = "personal"\n\tmodel_reasoning_effort = "personal-effort"\n' + before.replace("developer_instructions = '''", "developer_instructions = '''\nmodel = \"body-only\"\nmodel_reasoning_effort = \"body-effort\""));
-  expect(readAgentModel("codex", file).selection).toEqual({ model: "personal", variant: "personal-effort" });
-  expect(await runInstall({ ...opts, command })).toBe(0);
-  expect(readAgentModel("codex", file).selection).toEqual({ model: "personal", variant: "personal-effort" });
-});
-
 it("removing Claude Todo cleans its shared prompt despite Pi's separate prompt and preserves foreign notes/shared skills", async () => {
   const claude = { ...scopeOptions(), runtimes: ["claude-code" as const] };
   expect(await runInstall(claude)).toBe(0);
@@ -128,7 +104,7 @@ it.each([false, true])("retains original backups and persists partial ownership 
   expect(await runInstall(scopeOptions())).toBe(fail ? 1 : 0);
   const applied = readManifest(manifestFile).runtimes.pi!;
   expect(applied.owned.length).toBeGreaterThan(10);
-  expect(applied.owned).toContain(path.join(configDir, "agents", "implementer.md"));
+  expect(applied.owned).toContain(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"));
   if (fail) { expect(applied.owned).not.toContain(failedTarget); expect(fs.existsSync(failedTarget)).toBe(false); }
   // Initial config and binary snapshots must survive ownership checkpoints in this operation.
   expect(listBackups(backups).some((info) => info.id === binaryBackup.id)).toBe(true);
@@ -149,11 +125,11 @@ it.each([false, true])("retains original backups and persists partial ownership 
   expect(fs.readFileSync(manifestFile, "utf8")).toBe(originalManifest);
 });
 
-/** A historic install: the file Stack would write is on disk, but no manifest records it. */
-async function historicAgent(content?: string) {
-  const adoptOptions = { ...scopeOptions(), scope: { section: "agents" as const, agent: "implementer" } };
+/** A historic install: the runtime asset Stack writes is on disk, but no manifest records it. */
+async function historicHeader(content?: string) {
+  const adoptOptions = { ...scopeOptions(), scope: { section: "config" as const }, execute: () => "" };
   expect(await runInstall(adoptOptions)).toBe(0);
-  const file = path.join(root, "pi-agent", "agents", "implementer.md");
+  const file = path.join(root, "pi-agent", "extensions", "jorgex-header.ts");
   const canon = fs.readFileSync(file, "utf8");
   fs.rmSync(path.join(root, ".jorgex-stack"), { recursive: true });
   if (content !== undefined) fs.writeFileSync(file, content);
@@ -161,10 +137,10 @@ async function historicAgent(content?: string) {
   return { adoptOptions, file, canon, adoptBackups };
 }
 it.each([["idéntico al canon", undefined], ["distinto del canon", "personal"]])("reports a foreign file as %s and keeps it without confirmation", async (state, content) => {
-  const { adoptOptions, file, canon, adoptBackups } = await historicAgent(content);
+  const { adoptOptions, file, canon, adoptBackups } = await historicHeader(content);
   const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
   expect(await runInstall(adoptOptions)).toBe(0);
-  expect(warn.mock.calls.map(([message]) => message)).toEqual([expect.stringMatching(new RegExp(`${state}.*implementer\\.md`))]);
+  expect(warn.mock.calls.map(([message]) => message)).toEqual([expect.stringMatching(new RegExp(`${state}.*jorgex-header\\.ts`))]);
   warn.mockClear();
   expect(await runDoctor(adoptOptions)).toBe(0);
   expect(warn).toHaveBeenCalledWith(expect.stringContaining(state));
@@ -173,7 +149,7 @@ it.each([["idéntico al canon", undefined], ["distinto del canon", "personal"]])
   expect(adoptBackups()).toEqual([]);
 });
 it("adopts a different foreign file after confirmation: backup, canon and ownership, then no further changes", async () => {
-  const { adoptOptions, file, canon, adoptBackups } = await historicAgent("personal");
+  const { adoptOptions, file, canon, adoptBackups } = await historicHeader("personal");
   const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
   const confirmAdoption = vi.fn(async () => true);
   expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
@@ -191,18 +167,8 @@ it("adopts a different foreign file after confirmation: backup, canon and owners
   expect([fs.readFileSync(path.join(state, "manifest.json"), "utf8"), fs.readdirSync(path.join(state, "backups"))]).toEqual(settled);
   expect(fs.readFileSync(file, "utf8")).toBe(canon);
 });
-it("keeps the model and effort of an adopted subagent, as it does for an owned one", async () => {
-  const { adoptOptions, file, canon } = await historicAgent();
-  const personal = canon.replace("---\n", '---\nmodel: "personal"\nthinking: "personal-effort"\n');
-  fs.writeFileSync(file, personal.replace(/\n$/, "\nlocal note\n"));
-  const confirmAdoption = vi.fn(async () => true);
-  expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
-  expect(confirmAdoption.mock.calls).toEqual([[file, false]]);
-  expect(fs.readFileSync(file, "utf8")).toBe(personal);
-  expect(readAgentModel("pi", file).selection).toEqual({ model: "personal", variant: "personal-effort" });
-});
 it("adopts an identical foreign file by recording ownership only, without writing or backing it up", async () => {
-  const { adoptOptions, file, canon, adoptBackups } = await historicAgent();
+  const { adoptOptions, file, canon, adoptBackups } = await historicHeader();
   const confirmAdoption = vi.fn(async () => true);
   const write = vi.spyOn(fs, "writeFileSync");
   expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
@@ -213,18 +179,18 @@ it("adopts an identical foreign file by recording ownership only, without writin
   expect(adoptBackups()).toEqual([]);
 });
 it.runIf(process.platform !== "win32")("never offers or records an identical foreign file reached through a linked directory", async () => {
-  const { adoptOptions, file } = await historicAgent();
-  const agents = path.dirname(file);
+  const { adoptOptions, file } = await historicHeader();
+  const extensions = path.dirname(file);
   const elsewhere = path.join(root, "elsewhere");
-  fs.renameSync(agents, elsewhere);
-  fs.symlinkSync(elsewhere, agents);
+  fs.renameSync(extensions, elsewhere);
+  fs.symlinkSync(elsewhere, extensions);
   const confirmAdoption = vi.fn(async () => true);
   await runInstall({ ...adoptOptions, confirmAdoption });
   expect(confirmAdoption).not.toHaveBeenCalled();
   expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
 });
 it("keeps a foreign file when adoption is declined, and never offers previews or non-regular targets", async () => {
-  const { adoptOptions, file, adoptBackups } = await historicAgent("personal");
+  const { adoptOptions, file, adoptBackups } = await historicHeader("personal");
   const confirmAdoption = vi.fn(async () => false);
   expect(await runInstall({ ...adoptOptions, confirmAdoption })).toBe(0);
   expect(confirmAdoption.mock.calls).toEqual([[file, false]]);
@@ -232,7 +198,7 @@ it("keeps a foreign file when adoption is declined, and never offers previews or
   expect(fs.readFileSync(file, "utf8")).toBe("personal");
   expect(manifest().runtimes.pi?.owned ?? []).not.toContain(file);
   expect(adoptBackups()).toEqual([]);
-  const elsewhere = path.join(root, "personal-agent.md");
+  const elsewhere = path.join(root, "personal-header.ts");
   fs.renameSync(file, elsewhere); fs.symlinkSync(elsewhere, file);
   expect(await runInstall({ ...adoptOptions, confirmAdoption: async () => { throw new Error("offered a symlink"); } })).toBe(0);
   expect(fs.readFileSync(elsewhere, "utf8")).toBe("personal");

@@ -8,9 +8,6 @@ import { runUpdate } from "./update.js";
 import { residueDirs, runDoctor } from "./doctor.js";
 import { cleanResidues, pruneBackups } from "./cleanup.js";
 import { runUninstall } from "./uninstall.js";
-import { editAgent } from "./models-picker.js";
-import { loadCanonicalAgents } from "./lib/canonical.js";
-import { stackRoot } from "./lib/paths.js";
 import { readManifest } from "./lib/manifest.js";
 import { detectEngram } from "./lib/detect.js";
 import type { OperationScope } from "./lib/operation-scope.js";
@@ -20,9 +17,7 @@ type CleanUnit = "residues" | "backups";
 type Option = { value: string; label: string };
 export interface MenuOperations {
   detect(): RuntimeId[];
-  agents(): string[];
   operate(action: Action, scope: OperationScope, runtimes: RuntimeId[]): Promise<number>;
-  edit(runtime: RuntimeId, agent: string, route: string): Promise<void>;
   managed?(): RuntimeId[];
   clean(unit: CleanUnit, ui: MenuUI): Promise<number>;
 }
@@ -39,7 +34,7 @@ const actions: Option[] = [
 const cleanUnits: Option[] = [{ value: "residues", label: "Residuos de versiones anteriores" }, { value: "backups", label: "Backups antiguos" }, BACK];
 const sections: Option[] = [
   { value: "all", label: "Todo" }, { value: "skills", label: "Skills compartidas" },
-  { value: "config", label: "Configuración por runtime" }, { value: "agents", label: "Subagentes" }, BACK,
+  { value: "config", label: "Configuración por runtime" }, BACK,
 ];
 
 export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boolean): Promise<void> {
@@ -53,14 +48,9 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
     while (true) {
       const choice = await ui.select(route, [
         { value: "apply", label: action === "doctor" ? "Comprobar (solo lectura)" : "Aplicar esta unidad" },
-        ...(action === "install" && scope.agent ? [{ value: "edit", label: "Editar modelo / esfuerzo" }] : []), BACK,
+        BACK,
       ]);
       if (choice === "back") return;
-      if (choice === "edit") {
-        try { await operations.edit(runtimes[0]!, scope.agent!, route); }
-        catch { ui.info("Agente pendiente; no se deshace lo ya guardado. Reintenta explícitamente."); }
-        continue;
-      }
       if (scope.section === "all" || scope.section === "skills") ui.info("Skills compartidas: alcance global, visible también para otros runtimes; no son copias aisladas por runtime.");
       if (action === "uninstall" && !await ui.confirm(`Retirar ${route}${scope.section === "all" || scope.section === "skills" ? ": incluye skills compartidas usadas por otros runtimes" : ""}. Conserva runtimes, datos de Engram, credenciales, sesiones y herramientas compartidas. ¿Continuar?`)) continue;
       try {
@@ -94,12 +84,7 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
         if (runtime === "back") break;
         const selected = runtime === "all" ? runtimes : [runtime as RuntimeId];
         const runtimeRoute = `${route} › ${runtime === "all" ? "Todos" : ADAPTERS[runtime as RuntimeId].name}`;
-        if (section !== "agents") { await unit(action, { section }, selected, runtimeRoute); continue; }
-        while (true) {
-          const agent = await ui.select(runtimeRoute, [{ value: "all", label: "Todos los subagentes" }, ...operations.agents().map((name) => ({ value: name, label: name })), BACK]);
-          if (agent === "back") break;
-          await unit(action, { section, ...(agent === "all" ? {} : { agent }) }, selected, `${runtimeRoute} › ${agent}`);
-        }
+        await unit(action, { section }, selected, runtimeRoute);
       }
     }
   }
@@ -116,8 +101,6 @@ const ui: MenuUI = {
 const operations: MenuOperations = {
   detect: () => (Object.keys(ADAPTERS) as RuntimeId[]).filter((id) => ADAPTERS[id].detect().installed),
   managed: () => Object.keys(readManifest().runtimes) as RuntimeId[],
-  agents: () => loadCanonicalAgents(path.join(stackRoot(), "agents")).map((agent) => agent.name),
-  edit: editAgent,
   clean(unit, cleanupUi) {
     const dirs = residueDirs();
     return unit === "residues" ? cleanResidues(dirs, cleanupUi) : pruneBackups(path.join(dirs.stateDir, "backups"), cleanupUi);
