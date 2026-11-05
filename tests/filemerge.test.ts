@@ -11,7 +11,6 @@ import {
   upsertMarkdownSection,
   upsertTomlSection,
 } from "../src/lib/filemerge.js";
-import { parseCanonicalAgent } from "../src/lib/canonical.js";
 
 describe("upsertMarkdownSection", () => {
   it("crea el bloque cuando el archivo no existe", () => {
@@ -295,42 +294,6 @@ describe("stripLeadingHtmlComments", () => {
     const out = stripLeadingHtmlComments(md);
     expect(out.startsWith("# Título")).toBe(true);
     expect(out).toContain("<!-- comentario en medio -->");
-  });
-});
-
-describe("parseCanonicalAgent", () => {
-  const SRC = `---
-name: demo-agent
-description: Does demo things. Not for: production.
-mode: subagent
-readonly: true
-bash: none
-spawn: false
----
-
-# Demo
-
-Body text.
-`;
-
-  it("parsea el frontmatter canónico completo", () => {
-    const agent = parseCanonicalAgent(SRC, "demo.md");
-    expect(agent.name).toBe("demo-agent");
-    expect(agent.description).toContain("Not for: production.");
-    expect(agent.mode).toBe("subagent");
-    expect(agent.readonly).toBe(true);
-    expect(agent.bash).toBe("none");
-    expect(agent.spawn).toBe(false);
-    expect(agent.body).toContain("# Demo");
-  });
-
-  it("no inventa permisos por defecto si faltan campos", () => {
-    const minimal = `---\nname: x\ndescription: d\nmode: subagent\n---\nbody`;
-    expect(() => parseCanonicalAgent(minimal, "x.md")).toThrow(/falta/);
-  });
-
-  it("falla claramente si falta un campo requerido", () => {
-    expect(() => parseCanonicalAgent("---\nname: x\n---\nbody", "x.md")).toThrow(/falta/);
   });
 });
 

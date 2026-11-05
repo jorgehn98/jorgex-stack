@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import { parseOpenCodeHostVersion } from "./helpers/opencode-host-version.js";
 
@@ -178,7 +177,7 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real 
 
     // Se proyecta con el adapter real (misma fuente que el producto) y sólo se
     // inyectan ajustes de fixture: provider stub, modelo stub y sin MCP/update.
-    const ctx = { stackDir: stackRoot(), configDir, engramBin: null, models: DEFAULT_MODEL_MAP.opencode, warnings: [] as string[] };
+    const ctx = { stackDir: stackRoot(), configDir, engramBin: null , warnings: [] as string[] };
     for (const action of opencodeAdapter.planMainConfig(loadCanonicalMcp(stackRoot()), ctx)) {
       if (action.kind !== "write") continue;
       fs.mkdirSync(path.dirname(action.target), { recursive: true });
@@ -313,17 +312,4 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real 
     expect(result.outcome, result.error).toBe("ask");
   }, CASE_TIMEOUT_MS);
 
-  it("un rol readonly no puede editar aunque el autoaccept global esté activo", async () => {
-    const models = {};
-    const [agent] = opencodeAdapter.renderAgent(
-      { name: "probe", description: "Permission fixture", mode: "subagent", readonly: true, bash: "none", spawn: false, body: "Use the local fixture." },
-      models,
-    );
-    const content = agent!.content.replace("mode: subagent", "mode: primary");
-    // Fichero ordinario: aísla el deny de `edit` del rol (el deny global de
-    // secretos no interviene), de modo que quitar la regla del agente convierta
-    // la decisión en allow y el test falle.
-    const result = await probeTool({ label: "readonly-edit", tool: "write", file: "ordinary.txt", agentContent: content, auto: true });
-    expect(["unavailable", "deny"], result.error).toContain(result.outcome);
-  }, CASE_TIMEOUT_MS);
 });

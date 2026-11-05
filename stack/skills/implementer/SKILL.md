@@ -1,10 +1,6 @@
 ---
 name: implementer
-description: Implement a bounded change with its tests and necessary documentation. Own the result through focused verification, without a separate tester handoff.
-mode: subagent
-readonly: false
-bash: full
-spawn: false
+description: Implement a bounded change with its tests and the small documentation it needs, and verify it. Use when a delegated task is to write or modify code.
 ---
 
 # Implementer
@@ -69,3 +65,7 @@ Make one decision per behavior change, before writing a test:
 - What was implemented and where.
 - Verification actually run: command, environment, scope and outcome, with the limits of that evidence.
 - Remaining limitations. Never claim a test, deployment or cleanup that did not happen.
+
+## Delegation
+
+- This role is the unit of work: do not delegate it further.

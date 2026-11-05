@@ -13,7 +13,6 @@ import { isContainedIn, readTextIfExists, sameFileContent, writeText } from "./l
 import { removeNativeHooks } from "./lib/hooks-format.js";
 import { createBackup } from "./lib/backup.js";
 import { loadCanonicalMcp } from "./lib/canonical.js";
-import { planAgents } from "./components/agents.js";
 import { planSkills } from "./components/skills.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { planOwnedProjection } from "./lib/owned-projection.js";
@@ -22,7 +21,6 @@ import { officialSetupVerifiers } from "./lib/official-engram-setup.js";
 import { editJsonc, parseJsoncObject } from "./lib/filemerge.js";
 import { installMissingEngram } from "./lib/engram-install.js";
 import { prepareWritingStyle, applyWritingStyle, resolveWritingStyleFile, type WritingStyleSnapshot, type WritingStylePlan } from "./lib/writing-style.js";
-import type { AgentModelChoices } from "./lib/agent-model.js";
 import { includesOwnedFile, type OperationScope } from "./lib/operation-scope.js";
 
 export const ADAPTERS: Record<RuntimeId, Adapter> = { "claude-code": claudeCodeAdapter, codex: codexAdapter, opencode: opencodeAdapter, pi: piAdapter };
@@ -99,21 +97,20 @@ export function makeContext(adapter: Adapter, configDir: string, targetDir?: str
   if (previous && !samePath(previous.configDir, configDir)) throw new Error(`${adapter.id}: configDir difiere del manifest; se conserva el perfil anterior.`);
   return {
     stackDir: stackRoot(), configDir, targetDir, engramBin: targetDir ? null : detectEngram(),
-    models: {} as AgentModelChoices, warnings: [], adoptable: [],
+    warnings: [], adoptable: [],
     writingStyle: prepareWritingStyle(resolveWritingStyleFile({ targetDir }), { rootDir: targetDir }),
     ownedFiles: new Set(Object.values(manifest.runtimes).flatMap((row) => row?.owned ?? [])),
     ownedMcpServers: new Set(previous?.mcpOwned), ownedConfigFields: new Set(previous?.configOwned),
   };
 }
 export function buildContentPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
-  return [...planSystemPrompt(adapter, ctx), ...planAgents(adapter, ctx), ...planSkills(adapter, ctx), ...(adapter.planAdditionalResources?.(ctx) ?? []).flatMap((action) => planOwnedProjection(action, ctx))];
+  return [...planSystemPrompt(adapter, ctx), ...planSkills(adapter, ctx), ...(adapter.planAdditionalResources?.(ctx) ?? []).flatMap((action) => planOwnedProjection(action, ctx))];
 }
 export function buildPlan(adapter: Adapter, ctx: InstallContext): FileAction[] {
   return [...adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx), ...buildContentPlan(adapter, ctx)];
 }
 export function buildScopedPlan(adapter: Adapter, ctx: InstallContext, scope: OperationScope): FileAction[] {
   if (scope.section === "skills") return planSkills(adapter, ctx);
-  if (scope.section === "agents") return planAgents(adapter, ctx, scope.agent);
   if (scope.section === "config") return [...adapter.planMainConfig(loadCanonicalMcp(ctx.stackDir), ctx), ...planSystemPrompt(adapter, ctx), ...(adapter.planAdditionalResources?.(ctx) ?? []).flatMap((action) => planOwnedProjection(action, ctx))];
   return buildPlan(adapter, ctx);
 }

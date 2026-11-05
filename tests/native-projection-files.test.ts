@@ -6,14 +6,12 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { codexAdapter } from "../src/adapters/codex.js";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import { piAdapter } from "../src/adapters/pi.js";
-import { planAgents } from "../src/components/agents.js";
 import { planSkills } from "../src/components/skills.js";
 import { planSystemPrompt } from "../src/components/system-prompt.js";
 import { applyChanges, diffPlan } from "../src/install.js";
 import { createBackup, restoreBackup } from "../src/lib/backup.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
 import { readTextIfExists } from "../src/lib/fsx.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import type { FileAction, InstallContext } from "../src/adapters/types.js";
 
 let root: string;
@@ -25,9 +23,7 @@ beforeEach(() => {
   const stackDir = path.join(root, "stack");
   fs.mkdirSync(path.join(stackDir, "skills", "one"), { recursive: true });
   fs.writeFileSync(path.join(stackDir, "skills", "one", "SKILL.md"), "---\nname: one\ndescription: One skill\n---\nSkill body\n");
-  fs.mkdirSync(path.join(stackDir, "agents"));
-  fs.copyFileSync(path.resolve("stack/agents/implementer.md"), path.join(stackDir, "agents", "implementer.md"));
-  ctx = { stackDir, configDir: path.join(root, ".claude"), ownedFiles: owned, engramBin: null, models: DEFAULT_MODEL_MAP["claude-code"], warnings: [] };
+  ctx = { stackDir, configDir: path.join(root, ".claude"), ownedFiles: owned, engramBin: null, warnings: [] };
 });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
 
@@ -73,28 +69,8 @@ describe("native projection filesystem boundaries", () => {
     expect(owned.has(link)).toBe(false);
   });
 
-  it.each([claudeCodeAdapter, codexAdapter, opencodeAdapter, piAdapter])("preserves native model choices in managed agents (%s)", (adapter) => {
-    ctx.configDir = path.join(root, adapter.id);
-    apply(planAgents(adapter, ctx));
-    const target = [...owned][0]!;
-    const previous = fs.readFileSync(target, "utf8");
-    const choices = target.endsWith(".toml") ? 'model = "user/chosen"\nmodel_reasoning_effort = "high"\n' : 'model: "user/chosen"\nthinking: high\n';
-    fs.writeFileSync(target, target.endsWith(".toml") ? choices + previous : previous.replace(/^---\n/, `---\n${choices}`));
-    const before = fs.readFileSync(target, "utf8");
-    const bodyExample = target.endsWith(".toml") ? 'model = "documentation-only"' : 'model: documentation-only';
-    fs.appendFileSync(path.join(ctx.stackDir, "agents", "implementer.md"), `\nUpdated instruction\n${bodyExample}\n`);
-    const info = apply(planAgents(adapter, ctx))!;
-    expect(fs.readFileSync(info.files[0]!.stored, "utf8")).toBe(before);
-    expect(fs.readFileSync(target, "utf8")).toContain(choices.trim());
-    expect(fs.readFileSync(target, "utf8")).toContain(bodyExample);
-    expect(diffPlan(planAgents(adapter, ctx)).every((change) => change.status === "unchanged")).toBe(true);
-    owned.clear();
-    expect(planAgents(adapter, ctx)).toEqual([]);
-    expect(fs.readFileSync(target, "utf8")).toContain("user/chosen");
-  });
-
   it("does not overwrite a foreign file created after planning", () => {
-    const plan = diffPlan(planAgents(claudeCodeAdapter, ctx));
+    const plan = diffPlan(planSkills(claudeCodeAdapter, ctx));
     const target = plan[0]!.action.target;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, "User raced creation");
@@ -106,10 +82,10 @@ describe("native projection filesystem boundaries", () => {
   it("blocks unreadable/non-file inputs instead of treating them as absence", () => {
     fs.mkdirSync(path.join(root, "not-a-file"));
     expect(() => readTextIfExists(path.join(root, "not-a-file"))).toThrow();
-    const target = path.join(ctx.configDir, "agents", "implementer.md");
+    const target = path.join(root, ".agents", "skills", "one", "SKILL.md");
     fs.mkdirSync(target, { recursive: true });
     owned.add(target);
-    expect(() => planAgents(claudeCodeAdapter, ctx)).toThrow(/regular/);
+    expect(() => planSkills(claudeCodeAdapter, ctx)).toThrow(/regular/);
   });
 
   it("writes only a relative Claude import, escaping spaces and preserving user instructions", () => {

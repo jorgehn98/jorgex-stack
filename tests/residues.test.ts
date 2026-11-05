@@ -86,7 +86,7 @@ it("treeBytes sums file sizes and is null for a missing path; formatBytes is hum
 });
 
 describe("doctor", () => {
-  const options = () => ({ targetDir: root, runtimes: ["codex" as const, "pi" as const], scope: { section: "agents" as const, agent: "implementer" } });
+  const options = () => ({ targetDir: root, runtimes: ["codex" as const, "pi" as const], scope: { section: "skills" as const } });
   const tree = () => fs.readdirSync(root, { recursive: true, withFileTypes: true })
     .map((entry) => { const file = path.join(entry.parentPath, entry.name); const stat = fs.lstatSync(file); return `${file}|${stat.size}|${stat.mtimeMs}`; }).sort();
 
@@ -132,18 +132,18 @@ describe("manifest updatedAt", () => {
   it("is renewed when the row changes and stays put when it does not", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
-    expect(await runInstall({ ...options(), scope: { section: "agents", agent: "implementer" } })).toBe(0);
+    expect(await runInstall({ ...options(), scope: { section: "skills" } })).toBe(0);
     expect(updatedAt()).toBe("2026-01-01T00:00:00.000Z");
 
     vi.setSystemTime(new Date("2026-02-01T00:00:00.000Z"));
     const raw = fs.readFileSync(manifestFile(), "utf8");
     const mtime = fs.statSync(manifestFile()).mtimeMs;
-    expect(await runInstall({ ...options(), scope: { section: "agents", agent: "implementer" } })).toBe(0);
+    expect(await runInstall({ ...options(), scope: { section: "skills" } })).toBe(0);
     expect(fs.readFileSync(manifestFile(), "utf8")).toBe(raw);
     expect(fs.statSync(manifestFile()).mtimeMs).toBe(mtime);
 
     vi.setSystemTime(new Date("2026-03-01T00:00:00.000Z"));
-    expect(await runInstall({ ...options(), scope: { section: "skills" } })).toBe(0);
+    expect(await runInstall({ ...options(), scope: { section: "config" } })).toBe(0);
     expect(updatedAt()).toBe("2026-03-01T00:00:00.000Z");
   });
 });

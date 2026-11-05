@@ -4,17 +4,12 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange } from "./types.js";
 import { isCanonicalMcpServerEnabled, loadCanonicalDefaults } from "../lib/canonical.js";
-import type { CanonicalAgent, CanonicalMcp } from "../lib/canonical.js";
-import { agentModelChoice, type AgentModelChoices } from "../lib/agent-model.js";
+import type { CanonicalMcp } from "../lib/canonical.js";
 import { detectClaudeCode } from "../lib/detect.js";
 import { readTextIfExists } from "../lib/fsx.js";
 import { parseJsoncObject, upsertJson } from "../lib/filemerge.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { registerOfficialSetupVerifier } from "../lib/official-engram-setup.js";
-
-function yamlString(value: string): string {
-  return JSON.stringify(value);
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -68,11 +63,6 @@ function assertCompatibleContext7(server: CanonicalMcp["servers"][string], value
   }
 }
 
-
-/** Los lectores no reciben shell ni herramientas de escritura/delegación. */
-function toolsFor(agent: CanonicalAgent): string | null {
-  return agent.readonly ? "Read, Grep, Glob, Skill" : null;
-}
 
 /** Engram integrado por el plugin oficial de marketplace; sus hooks y skill de memoria no sustituyen al MCP user separado que registra el setup oficial y que Stack no posee ni muta. */
 function hasEngramPlugin(configDir: string): boolean {
@@ -149,7 +139,6 @@ export const claudeCodeAdapter: Adapter = {
     const agentsHome = samePath(configDir, process.env.CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude")) ? HOME : path.dirname(configDir);
     return {
       systemPromptFile: path.join(configDir, "CLAUDE.md"),
-      agentsDir: path.join(configDir, "agents"),
       skillsDir: path.join(agentsHome, ".agents", "skills"),
       skillLinksDir: path.join(configDir, "skills"),
       sharedPromptFile: path.join(agentsHome, ".agents", "AGENTS.md"),
@@ -157,25 +146,6 @@ export const claudeCodeAdapter: Adapter = {
       scriptsDir: path.join(configDir, "scripts"),
     };
   },
-
-  renderAgent(agent: CanonicalAgent, models: AgentModelChoices) {
-    const lines = [`name: ${agent.name}`, `description: ${yamlString(agent.description)}`];
-    const tools = toolsFor(agent);
-    if (tools !== null) lines.push(`tools: ${tools}`);
-    const selected = agentModelChoice(models, agent.name);
-    if (selected.model) lines.push(`model: ${yamlString(selected.model)}`);
-    if (selected.variant) lines.push(`effort: ${yamlString(selected.variant)}`);
-    if (!agent.spawn) lines.push("disallowedTools: Agent");
-
-    return [
-      {
-        file: `${agent.name}.md`,
-        content: `---\n${lines.join("\n")}\n---\n${agent.body}`,
-        kind: "agent" as const,
-      },
-    ];
-  },
-
 
   planMainConfig(canonical: CanonicalMcp, ctx: InstallContext): FileAction[] {
     // MCP de scope user: ~/.claude.json (hermano del configDir, así --target-dir

@@ -8,7 +8,7 @@ Stack copia la cabecera local `stack/assets/pi/jorgex-header.ts` a `~/.pi/agent/
 
 Engram usa tools/hooks oficiales de gentle-engram, sin MCP adicional ni variante TypeBox de Stack. El corte explícito retira jorgex-pi con el gestor nativo; un Engram MCP personalizado bloquea la retirada selectiva y exige resolución explícita, nunca se borra por inferencia. No hay migración universal de contratos antiguos.
 
-Browser Control se registra como MCP stdio; su proveedor posee relay/extension/attach. Ver [browser](browser-automation.md). Pi RPC consulta modelos y el estado activo sin cambiarlo; [modelos](models.md).
+Browser Control se registra como MCP stdio; su proveedor posee relay/extension/attach. Ver [browser](browser-automation.md). Pi RPC consulta modelos y el estado activo sin cambiarlo; Stack ya no edita modelos por agente: [delegación](delegation.md).
 
 ## Permisos y límites
 

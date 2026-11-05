@@ -1,6 +1,6 @@
 # JorgeX Stack
 
-Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: fifteen local skills, six subagents and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
+Shared configuration for **Claude Code, Codex CLI, OpenCode v2 and official Pi**: twenty-one local skills, no agents of its own and native integrations, applied through each runtime's own mechanisms. Stack does not install a second Pi runtime and keeps no private provider contracts or receipts.
 
 ## Quick start
 
@@ -32,23 +32,23 @@ Both commands open the same menu, in Spanish. It takes no subcommands or flags (
 
 | Menu entry | What it does |
 | --- | --- |
-| **Instalar / configurar** | Applies Stack's skills, subagents and configuration to the runtimes you select. |
+| **Instalar / configurar** | Applies Stack's skills and configuration to the runtimes you select. |
 | **Actualizar** | Updates runtime configuration through native channels and re-applies Stack's resources. |
 | **Doctor** | Read-only check of the local configuration. |
 | **Desinstalar** | Removes the managed resources you select, with confirmation and backup. |
 | **Limpiar** | Removes leftovers from earlier versions and old backups ([details](#limpiar-cleanup)). |
 
-The first four entries offer the sections Todo (everything), Skills compartidas (shared skills), Configuración por runtime (per-runtime configuration) and Subagentes (subagents). Limpiar chooses neither section nor runtime.
+The first three entries offer the sections Todo (everything), Skills compartidas (shared skills) and Configuración por runtime (per-runtime configuration). Limpiar chooses neither section nor runtime.
 
-Pick a target and a unit, then **Aplicar**. Navigating or going back never runs an installation. Editing a subagent's model or effort has its own **Guardar**, independent of Aplicar: saved changes remain when you go back, and unsaved drafts are discarded when you leave the editor. A failure leaves the applied and pending units visible; there is no global rollback and no automatic retry.
+Pick a target and a unit, then **Aplicar**. Navigating or going back never runs an installation. A failure leaves the applied and pending units visible; there is no global rollback and no automatic retry.
 
-Missing runtimes are not installed when you open a screen. Updating configuration uses native channels (`claude update`, `codex update`, `opencode upgrade`, `pi update --all` and the official package registry); updating only skills or subagents does not update tools. Doctor compares local configuration without installing, downloading, starting a browser or writing memories. It does not certify that a runtime actually loads the resources, has access to a model, or enforces permissions.
+Missing runtimes are not installed when you open a screen. Updating configuration uses native channels (`claude update`, `codex update`, `opencode upgrade`, `pi update --all` and the official package registry); updating only skills does not update tools. Doctor compares local configuration without installing, downloading, starting a browser or writing memories. It does not certify that a runtime actually loads the resources, has access to a model, or enforces permissions.
 
 ## Shared canon
 
-**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, organic-growth, project-architect, retro, second-opinion, skill-creator, to-spec, visual-director, what and xreview. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
+**Skills:** diagnose, grilling, landing-launch, lean-code, mcp-builder, orchestrator, organic-growth, project-architect, retro, second-opinion, skill-creator, to-spec, visual-director, what and xreview, plus the six work roles: implementer, generalist, analyst, reviewer, security-auditor and simplifier. They are copied whole from `stack/skills` to `~/.agents/skills`, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy.
 
-**Subagents:** implementer, analyst, reviewer, security-auditor, simplifier and generalist. The primary agent belongs to the runtime and loads orchestrator as a skill. There are no tiers and no factory models or efforts, and Stack does not impose `defaultProvider`, `defaultModel` or `defaultThinkingLevel` on Pi. Implementer owns code and tests; simplifier is always read-only. Models are saved per agent in its native file, preserving body and permissions.
+**Roles:** the six work roles are skills, not agents. The primary agent belongs to the runtime and loads `orchestrator`; when it delegates, it uses the runtime's general subagent and tells it which role skill to load. Stack projects no agent file and does not save models per agent. The orchestrator declares a level and effort per role, and the level-to-model ladder lives in your global instructions for each runtime: see [delegation](docs/references/delegation.md).
 
 A single profile serves both human and programmatic use. Native APIs (SDK/CLI, Codex app-server, OpenCode v2 server, Pi RPC) allow structured operations according to each host, not a universal takeover of an open TTY. Herdr is neither installed nor configured: an existing personal integration is kept.
 
@@ -59,8 +59,8 @@ The canonical workflow is [orchestrator](stack/skills/orchestrator/SKILL.md) and
 | Runtime | Stack resources and integration |
 | --- | --- |
 | Claude Code | Native subagents, skill links, `~/.agents/AGENTS.md` with a minimal bridge in `~/.claude/CLAUDE.md`, and fresh permissions; official Engram plugin/MCP. No additional browser. |
-| Codex | TOML agents, shared skills, global instructions and fresh permissions; official Engram plugin/hooks/MCP. No desktop browser added. |
-| OpenCode v2 | Native agents/permissions, server `opencode.json(c)`, client `cli.json`, local panel `./tui/subagents`; full official Engram setup and Browser Control. V1 is not supported. |
+| Codex | Shared skills, global instructions and fresh permissions; official Engram plugin/hooks/MCP. No desktop browser added. |
+| OpenCode v2 | Native permissions, server `opencode.json(c)`, client `cli.json`, local panel `./tui/subagents`; full official Engram setup and Browser Control. V1 is not supported. |
 | Official Pi | Agents with project and global context, instructions, local header, MCP configuration and a fresh permission policy; native extensions installed by Pi, including Engram and compact-tools. No imposed theme and no jorgex-pi installer. |
 
 Effective paths respect each runtime's native configuration and environment variables. Context7 uses an empty placeholder so every user connects their own account; credentials are never distributed. The [writing style](docs/references/writing-style.md) is projected into all runtimes, with no programmatic overlay.
@@ -73,11 +73,11 @@ Native steps (runtime updaters, package registry, Engram setup) are synchronous 
 
 Claude, Codex and OpenCode use the full official setup; Pi uses `gentle-engram` as native tools and hooks, not an additional Engram MCP. Stack does not patch the plugin, TypeBox or `<private>`. In OpenCode it removes, through configuration, the extra monitor `opencode-subagent-statusline` and uses its v2 panel; Engram's plugin, hooks and MCP stay intact. The upstream capture limitation with nested `<private>` is not considered fixed: [original report](https://github.com/Gentleman-Programming/engram/issues/1558#issuecomment-5896556683). Composition tests do not exercise the whole Memory Protocol or a personal Windows installation.
 
-### Browser and models
+### Browser and delegation
 
 **Browser Control** is available only in OpenCode and Pi, through the provider's official CLI/MCP and Chromium extension, and requires Node >= 22.19. It needs explicit tab adoption and has no fallback to Playwright or DevTools. Stack does not supervise the relay or attach profiles. See [limits and security](docs/references/browser-automation.md).
 
-Model catalogs are native: official Claude SDK, Codex app-server, OpenCode v2 `/api/model`, Pi RPC. If authentication or the catalog is missing, Stack shows a notice and allows inheritance or a manual ID. Only efforts accredited for the model are offered; there is no curated catalog and no promise of entitlement. See [models](docs/references/models.md).
+Delegation uses the runtime's general subagent with a role skill. The orchestrator declares each role's level (N1–N4) and effort; the ladder from level to model lives in your global instructions for that runtime, so Stack never pins provider model IDs or discovers catalogs. Without a ladder the child inherits the parent model. See [delegation](docs/references/delegation.md).
 
 ## Preservation and removal
 
@@ -101,11 +101,11 @@ Desinstalar removes only the selected managed resources, with confirmation and b
 
 ### Files Stack did not record
 
-A file that already exists at a path Stack projects (subagents, files of managed skills, the Pi header, OpenCode client resources) and that the manifest does not record is treated as someone else's, even if an earlier Stack version installed it. It is kept untouched, and both Aplicar and Doctor report whether it is "idéntico al canon" (identical to the canon) or "distinto del canon" (different from it).
+A file that already exists at a path Stack projects (files of managed skills, the Pi header, OpenCode client resources) and that the manifest does not record is treated as someone else's, even if an earlier Stack version installed it. It is kept untouched, and both Aplicar and Doctor report whether it is "idéntico al canon" (identical to the canon) or "distinto del canon" (different from it).
 
 To bring it back under management, apply the affected unit from Instalar / configurar or Actualizar. Stack asks file by file, defaulting to No. If you accept:
 
-- A different file is backed up to an `adopt-<runtime>` snapshot, replaced by the canon and recorded as Stack's. An adopted subagent keeps the model and effort it had, like one Stack created.
+- A different file is backed up to an `adopt-<runtime>` snapshot, replaced by the canon and recorded as Stack's.
 - An identical file is only recorded, with no write and no backup.
 
 From then on Stack updates and removes it like any of its own resources. If you answer No, the file stays yours and the notice repeats; Doctor does not fail because of it. Symbolic links, directories and whole foreign skills are never offered for adoption.
@@ -176,7 +176,7 @@ Reference documents are written in Spanish.
 
 - [Official Pi and extensions](docs/references/pi-runtime.md)
 - [Browser Control](docs/references/browser-automation.md)
-- [Models](docs/references/models.md)
+- [Delegation](docs/references/delegation.md)
 - [Permissions](docs/references/permissions.md)
 - [Claude limits](docs/references/claude-code-limits.md)
 - [Writing style](docs/references/writing-style.md)

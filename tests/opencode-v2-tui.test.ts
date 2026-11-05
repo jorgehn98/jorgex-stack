@@ -9,7 +9,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { opencodeAdapter } from "../src/adapters/opencode.js";
 import type { FileAction } from "../src/adapters/types.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import { TEST_MODEL_MAP as DEFAULT_MODEL_MAP } from "./fixtures/model-map.js";
 import { stackRoot } from "../src/lib/paths.js";
 import {
   cleanupOwnedResourcesOrThrow,
@@ -465,7 +464,6 @@ describe.skipIf(hostBinary === undefined)(
         stackDir: stackRoot(),
         configDir,
         engramBin: null,
-        models: DEFAULT_MODEL_MAP.opencode,
         warnings: [] as string[],
       };
       const actions: FileAction[] = [

@@ -5,11 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import type { InstallContext } from "../src/adapters/types.js";
 import { loadCanonicalMcp } from "../src/lib/canonical.js";
-import type { AgentModelChoices } from "../src/lib/agent-model.js";
 import { stackRoot } from "../src/lib/paths.js";
-
-const MODELS: AgentModelChoices = {
-};
 
 
 
@@ -32,7 +28,6 @@ describe("claudeCodeAdapter.planMainConfig: mcpServers", () => {
     stackDir: stackRoot(),
     configDir,
     engramBin: "/opt/engram",
-    models: MODELS,
     warnings: [],
     ...overrides,
   });
@@ -262,7 +257,6 @@ describe("claudeCodeAdapter.planMainConfig: permissions por defecto", () => {
     stackDir: stackRoot(),
     configDir,
     engramBin: "/opt/engram",
-    models: MODELS,
     warnings: [],
     ...overrides,
   });

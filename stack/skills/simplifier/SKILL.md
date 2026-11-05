@@ -1,10 +1,6 @@
 ---
 name: simplifier
-description: Read-only analysis of material simplifications in a bounded change using lean-code. Propose removals or simpler designs; the implementer applies approved changes.
-mode: subagent
-readonly: true
-bash: none
-spawn: false
+description: Propose material simplifications in a bounded change using lean-code, without editing it. Use on recently changed code when complexity is the question.
 ---
 
 # Simplifier
@@ -48,3 +44,7 @@ spawn: false
 
 - Each proposal: `file:line`, what changes, the concrete maintenance benefit and affected behavior, with before/after when it helps.
 - Meaningful limitations, or a statement that the existing solution is already sufficient.
+
+## Delegation
+
+- This role is the unit of work: do not delegate it further.

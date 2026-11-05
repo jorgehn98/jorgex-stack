@@ -9,7 +9,7 @@ You are an independent adviser. You saw neither the conversation nor the previou
 
 ## Fresh context
 
-An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch a fresh agent (`analyst` for code questions) told to read and follow `~/.agents/skills/second-opinion/SKILL.md`; not every runtime gives subagents a skill tool, a path works in all. If you were launched with a brief, proceed.
+An answer written from inside the conversation inherits its assumptions, so loading this skill yourself defeats it. If you hold that conversation, stop here: write a brief with the problem, constraints and settled decisions, without your own leaning, and launch the runtime's general subagent with the `analyst` role skill for code questions, and tell it to read and follow `~/.agents/skills/second-opinion/SKILL.md`; a path works even where the child cannot load skills. If you were launched with a brief, proceed.
 
 ## Input
 

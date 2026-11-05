@@ -3,16 +3,15 @@ import { runMenu, type MenuOperations } from "../src/cli.js";
 
 function harness(answers: string[], fail = false) {
   const operate = vi.fn(async () => fail ? 1 : 0);
-  const edit = vi.fn(async () => {});
   const clean = vi.fn(async (_unit: string, _ui: unknown) => { if (fail) throw new Error("unreadable"); return 0; });
   const messages: string[] = [];
-  const operations: MenuOperations = { detect: () => ["pi"], agents: () => ["implementer", "reviewer"], operate, edit, clean };
+  const operations: MenuOperations = { detect: () => ["pi"], operate, clean };
   const ui = { select: async (_path: string, options: { value: string; label: string }[]) => {
     const value = answers.shift()!;
     expect(options.some((option) => option.value === value)).toBe(true);
     return value;
   }, confirm: vi.fn(async () => true), info: (message: string) => { messages.push(message); } };
-  return { operations, ui, operate, edit, clean, messages };
+  return { operations, ui, operate, clean, messages };
 }
 it("does nothing without a TTY, including detection", async () => {
   const h = harness([]); const detect = vi.spyOn(h.operations, "detect");
@@ -20,11 +19,11 @@ it("does nothing without a TTY, including detection", async () => {
   expect(detect).not.toHaveBeenCalled(); expect(h.operate).not.toHaveBeenCalled();
   expect(h.messages.join(" ")).toContain("terminal");
 });
-it("visits individual Pi agents and returns one level without lifecycle operations", async () => {
-  const h = harness(["install", "agents", "pi", "implementer", "edit", "back", "reviewer", "back", "back", "back", "back", "exit"]);
+it("visits a scoped unit and returns without applying it", async () => {
+  const h = harness(["install", "skills", "back", "back", "exit"]);
   await runMenu(h.operations, h.ui, true);
-  expect(h.edit).toHaveBeenCalledExactlyOnceWith("pi", "implementer", expect.stringContaining("implementer"));
   expect(h.operate).not.toHaveBeenCalled();
+  expect(h.ui.confirm).not.toHaveBeenCalled();
 });
 it("canceling destructive scope confirmation has no operation effects", async () => {
   const h = harness(["uninstall", "config", "pi", "apply", "back", "back", "back", "exit"]);
