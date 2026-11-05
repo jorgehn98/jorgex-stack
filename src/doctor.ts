@@ -85,7 +85,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
       }
       const row = readManifest(path.join(stateDirectory(opts.targetDir), "manifest.json")).runtimes[id];
       for (const file of row?.owned ?? []) if (includesOwnedFile(adapter, ctx, scope, file) && !fs.lstatSync(file, { throwIfNoEntry: false })) throw new Error(`Recurso gestionado ausente: ${file}`);
-      if (id === "codex") p.log.info("Codex: lectores conservan shell; aislamiento solo por sesión padre readonly, no garantía por perfil.");
+      if (id === "codex") p.log.info("Codex: el subagente hereda sandbox y herramientas del padre; no hay aislamiento por rol.");
       if (id === "claude-code") p.log.info("Claude browser requiere integración Chrome/cuenta compatibles; Stack no añade browser.");
       if (id === "codex") p.log.info("Codex CLI no acredita browser desktop; sin fallback adicional.");
       p.log.info(`${id}: configuración local comprobada, no certifica carga/enforcement runtime.`);
