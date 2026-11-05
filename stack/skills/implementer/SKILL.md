@@ -58,7 +58,7 @@ Make one decision per behavior change, before writing a test:
 - Preserve user data and unrelated changes.
 - No dependency installation or destructive Git without the required approval.
 - Resolve routine details directly. Escalate one concrete question when the task needs a material scope, safety or architecture decision.
-- Do not subdelegate or restart a general investigation.
+- Do not restart a general investigation.
 
 ## Result
 

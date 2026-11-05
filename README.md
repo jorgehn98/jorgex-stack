@@ -38,7 +38,7 @@ Both commands open the same menu, in Spanish. It takes no subcommands or flags (
 | **Desinstalar** | Removes the managed resources you select, with confirmation and backup. |
 | **Limpiar** | Removes leftovers from earlier versions and old backups ([details](#limpiar-cleanup)). |
 
-The first three entries offer the sections Todo (everything), Skills compartidas (shared skills) and Configuración por runtime (per-runtime configuration). Limpiar chooses neither section nor runtime.
+The first four entries offer the sections Todo (everything), Skills compartidas (shared skills) and Configuración por runtime (per-runtime configuration). Limpiar chooses neither section nor runtime.
 
 Pick a target and a unit, then **Aplicar**. Navigating or going back never runs an installation. A failure leaves the applied and pending units visible; there is no global rollback and no automatic retry.
 
@@ -61,7 +61,7 @@ The canonical workflow is [orchestrator](stack/skills/orchestrator/SKILL.md) and
 | Claude Code | Native subagents, skill links, `~/.agents/AGENTS.md` with a minimal bridge in `~/.claude/CLAUDE.md`, and fresh permissions; official Engram plugin/MCP. No additional browser. |
 | Codex | Shared skills, global instructions and fresh permissions; official Engram plugin/hooks/MCP. No desktop browser added. |
 | OpenCode v2 | Native permissions, server `opencode.json(c)`, client `cli.json`, local panel `./tui/subagents`; full official Engram setup and Browser Control. V1 is not supported. |
-| Official Pi | Agents with project and global context, instructions, local header, MCP configuration and a fresh permission policy; native extensions installed by Pi, including Engram and compact-tools. No imposed theme and no jorgex-pi installer. |
+| Official Pi | Instructions, local header, MCP configuration, a fresh permission policy and the skills catalog visible to its general subagent; native extensions installed by Pi, including Engram and compact-tools. No imposed theme and no jorgex-pi installer. |
 
 Effective paths respect each runtime's native configuration and environment variables. Context7 uses an empty placeholder so every user connects their own account; credentials are never distributed. The [writing style](docs/references/writing-style.md) is projected into all runtimes, with no programmatic overlay.
 

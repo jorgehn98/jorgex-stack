@@ -2,29 +2,7 @@
 
 Los seis roles de trabajo (`implementer`, `generalist`, `analyst`, `reviewer`, `security-auditor`, `simplifier`) son skills, no agentes. El principal de cada runtime carga `orchestrator` y, cuando delega, lanza el subagente general del runtime y le dice qué skill de rol cargar.
 
-## Subagente general por runtime
-
-| Runtime | Agente |
-| --- | --- |
-| Claude Code | `general-purpose` |
-| Codex | `worker` |
-| OpenCode v2 | `general` |
-| Pi | `worker` |
-
-No se usan los agentes de exploración de solo lectura: el `explore` de OpenCode deniega la tool `skill` con un comodín y no vería la skill del rol.
-
-## Niveles
-
-El orchestrator declara un nivel por rol y, cuando hace falta, un esfuerzo:
-
-| Nivel | Semántica | Rol |
-| --- | --- | --- |
-| N1 | mecánico y barato | `generalist` |
-| N2 | estándar | `analyst`, `simplifier` |
-| N3 | alto | `implementer`, `reviewer` |
-| N4 | máximo | `security-auditor` |
-
-El nivel no codifica un modelo: eso depende del runtime y de lo que tengas contratado.
+El orchestrator declara un nivel por rol y, cuando hace falta, un esfuerzo. El nivel no codifica un modelo: esta página solo fija cómo se resuelve y dónde vive la escalera.
 
 ## Escalera
 

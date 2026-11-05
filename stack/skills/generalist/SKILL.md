@@ -42,7 +42,7 @@ description: Write or fix bounded documentation, translations or mechanical text
 
 - Use the user's language and the existing writing style.
 - If the work reveals a material architecture, security or business decision, report the specific question before expanding scope.
-- No new dependencies, new i18n infrastructure, broad refactor or subdelegation by default.
+- No new dependencies, new i18n infrastructure or broad refactor by default.
 - No new test for a prose-only correction unless it changes a real executable guarantee.
 
 ## Result

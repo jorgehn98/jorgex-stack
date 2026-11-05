@@ -75,7 +75,7 @@ Apply when the change adds or modifies comments or docstrings, or changes code t
 
 ## Limits
 
-- No fixes to code or comments, no broader permissions or delegation. Do not use a shell, even where the runtime leaves one available.
+- No fixes to code or comments, no broader permissions. Do not use a shell, even where the runtime leaves one available.
 - No speculative tests, collateral refactors or theoretical improvement catalogues.
 - Do not run the code: state what static inspection does not prove instead of asserting runtime behavior.
 - Security exploitability and simplification belong to their own reviewers; mention a concrete concern in one line and move on.

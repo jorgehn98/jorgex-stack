@@ -47,6 +47,13 @@ function readSubagentConfig(file: string) {
  * Pi no hereda el catálogo de skills en sus subagentes built-in. Se activa una sola
  * hoja, sin reescribir un valor existente ni reclamar el archivo completo.
  */
+function setDelegateSkills(root: Record<string, unknown>): void {
+  const subs = (root.subagents ??= {}) as Record<string, unknown>;
+  const ov = (subs.agentOverrides ??= {}) as Record<string, unknown>;
+  const del = (ov.delegate ??= {}) as Record<string, unknown>;
+  del.inheritSkills = true;
+}
+
 function planSkillVisibility(ctx: InstallContext): FileAction[] {
   const target = path.join(ctx.configDir, SETTINGS_FILE);
   let raw: string | null;
@@ -72,12 +79,7 @@ function planSkillVisibility(ctx: InstallContext): FileAction[] {
   return [{
     kind: "write",
     target,
-    content: upsertJson(raw, (root) => {
-      const subs = (root.subagents ??= {}) as Record<string, unknown>;
-      const ov = (subs.agentOverrides ??= {}) as Record<string, unknown>;
-      const del = (ov.delegate ??= {}) as Record<string, unknown>;
-      del.inheritSkills = true;
-    }),
+    content: raw === null ? upsertJson(null, (root) => { setDelegateSkills(root); }) : editJsonc(raw, (root) => { setDelegateSkills(root); }),
     configOwnership: [{ field: INHERIT_SKILLS_FIELD, owned: true }],
   }];
 }

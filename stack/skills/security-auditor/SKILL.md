@@ -36,7 +36,7 @@ description: Review authorization, permissions, sensitive data and trust boundar
 ## Limits
 
 - Never print secrets or access accounts or data beyond the assignment.
-- No code changes, exploitation against live systems or subdelegation. Do not use a shell, even where the runtime leaves one available.
+- No code changes or exploitation against live systems. Do not use a shell, even where the runtime leaves one available.
 
 ## Result
 

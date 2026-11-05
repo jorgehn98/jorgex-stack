@@ -41,7 +41,7 @@ Roles are skills, not agents. Load one yourself when you are going to do the wor
 
 ## Delegate
 
-- Use the runtime's general subagent: `general-purpose` in Claude Code, `worker` in Codex, `general` in OpenCode, `worker` in Pi. Do not delegate to a read-only explorer: in at least one runtime it cannot load skills.
+- Use the runtime's general subagent: `general-purpose` in Claude Code, `worker` in Codex, `general` in OpenCode, `delegate` in Pi. Do not delegate to a read-only explorer: in at least one runtime it cannot load skills.
 - Name the role skill by its exact ID, and give the worker the bounded outcome, relevant files, closed decisions, expected verification and the exact task path. Do not copy the whole conversation.
 - Work directly when a handoff adds little value.
 - Readers receive the diff and history from you; they do not run Git or shell.

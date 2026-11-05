@@ -166,7 +166,6 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real 
     tool: "read" | "write" | "edit" | "shell";
     file?: string;
     omitPermissions?: boolean;
-    agentContent?: string;
     auto: boolean;
   }): Promise<{ outcome: Outcome; error: string; code: number | null }> {
     const root = newCaseRoot(input.label);
@@ -210,11 +209,6 @@ describe.skipIf(hostBinary === undefined)("OpenCode v2 (major 2): el motor real 
 
       const args = ["run", "--standalone", "--format", "json", "--model", "fixture/fixture", "--title", "permission fixture"];
       if (input.auto) args.push("--auto");
-      if (input.agentContent !== undefined) {
-        fs.mkdirSync(path.join(configDir, "agents"), { recursive: true });
-        fs.writeFileSync(path.join(configDir, "agents", "probe.md"), input.agentContent);
-        args.push("--agent", "probe");
-      }
       args.push("Use the local fixture once.");
 
       const { code, stdout, stderr } = await runHost(root, args);

@@ -37,7 +37,7 @@ description: Propose material simplifications in a bounded change using lean-cod
 ## Limits
 
 - Preserve required behavior, safety and useful tests.
-- Do not edit files, request broader tools or subdelegate. Do not use a shell, even where the runtime leaves one available.
+- Do not edit files or request broader tools. Do not use a shell, even where the runtime leaves one available.
 - A direct simplification assignment belongs to implementer with `lean-code` and needs no prior simplifier pass.
 
 ## Result

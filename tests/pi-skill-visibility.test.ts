@@ -42,7 +42,7 @@ it.each([
   expect(await runInstall(options())).toBe(0);
   expect(fs.readFileSync(settings(), "utf8")).toBe(before);
   expect(manifest().runtimes.pi!.configOwned ?? []).not.toContain(field);
-  if (!expected) expect(warn.mock.calls.some(([message]) => String(message).includes("inheritSkills"))).toBe(true);
+  if (expected !== true) expect(warn.mock.calls.some(([message]) => String(message).includes("inheritSkills"))).toBe(true);
   expect(await runUninstall({ ...options(), removeEngram: false })).toBe(0);
   expect(fs.readFileSync(settings(), "utf8")).toBe(before);
 });
