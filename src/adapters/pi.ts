@@ -190,25 +190,30 @@ export const piAdapter: Adapter = {
     const legacy = JSON.stringify({ command: LEGACY_BROWSER_CONTROL_INVOCATION.command, args: [...LEGACY_BROWSER_CONTROL_INVOCATION.args] });
     const nativeContent = upsertJson(content, (root) => {
       const servers = root.mcpServers as Record<string, unknown>;
-      if (ctx.ownedMcpServers?.has(LEGACY_BROWSER_CONTROL_SERVER) === true) {
+      if (ctx.browseInvocation !== undefined) {
+        if (servers["browse"] === undefined) {
+          servers["browse"] = { command: ctx.browseInvocation.command, args: [...ctx.browseInvocation.args] };
+          ownership.push({ server: "browse", owned: true });
+        } else {
+          const current = servers["browse"];
+          if (!isRecord(current) || !isBrowseCommand(current.command, ctx.browseInvocation.command) || JSON.stringify(current.args ?? []) !== JSON.stringify(ctx.browseInvocation.args) || current.enabled === false || current.disabled === true) {
+            ctx.warnings.push(`Pi: ${BROWSE_INCOMPATIBLE_WARNING}`);
+            // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
+            ctx.browseInvocation = undefined;
+          }
+        }
+      }
+      // Sin Browse proyectado se conserva la entrada anterior y su ownership.
+      if (ctx.browseInvocation !== undefined && ctx.ownedMcpServers?.has(LEGACY_BROWSER_CONTROL_SERVER) === true) {
         const current = servers[LEGACY_BROWSER_CONTROL_SERVER];
         if (current !== undefined) {
           if (JSON.stringify(current) === legacy) delete servers[LEGACY_BROWSER_CONTROL_SERVER];
-          else ctx.warnings.push("Pi: el MCP 'browser-control' anterior está personalizado; se conserva intacto y Browse se registra aparte.");
+          else {
+            const notice = "Pi: el MCP 'browser-control' anterior está personalizado; se conserva intacto y Browse se registra aparte.";
+            if (!ctx.warnings.includes(notice)) ctx.warnings.push(notice);
+          }
         }
         ownership.push({ server: LEGACY_BROWSER_CONTROL_SERVER, owned: false });
-      }
-      if (ctx.browseInvocation === undefined) return;
-      if (servers["browse"] === undefined) {
-        servers["browse"] = { command: ctx.browseInvocation.command, args: [...ctx.browseInvocation.args] };
-        ownership.push({ server: "browse", owned: true });
-      } else {
-        const current = servers["browse"];
-        if (!isRecord(current) || !isBrowseCommand(current.command, ctx.browseInvocation.command) || JSON.stringify(current.args ?? []) !== JSON.stringify(ctx.browseInvocation.args) || current.enabled === false || current.disabled === true) {
-          ctx.warnings.push(`Pi: ${BROWSE_INCOMPATIBLE_WARNING}`);
-          // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
-          ctx.browseInvocation = undefined;
-        }
       }
     });
     const subagentTarget = path.join(ctx.configDir, SUBAGENT_CONFIG);

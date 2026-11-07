@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest
 import { runDoctor } from "../src/doctor.js";
 import { ADAPTERS, runInstall, type NativeExecutor } from "../src/install.js";
 import { readManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
+import { runUninstall } from "../src/uninstall.js";
 import * as detection from "../src/lib/detect.js";
 import { expectedEngramAssetName } from "../src/lib/github.js";
 
@@ -129,6 +130,25 @@ function seed(runtime: Runtime, entry: object, name = "browse"): string {
   return `"${name}": ${JSON.stringify(entry, null, 2).replace(/\n/g, `\n${indent}`)}`;
 }
 const target = (runtime: Runtime) => runInstall({ runtimes: [runtime], targetDir: root, opencodeTargetMajor: 2, dryRun: false, yes: true });
+function own(runtime: Runtime, mcpOwned: string[]) {
+  writeRuntimeManifest(runtime, {
+    configDir: configDir(runtime), owned: [], mcpOwned, configOwned: [], packages: [],
+    updatedAt: new Date().toISOString(),
+  }, path.join(root, ".jorgex-stack", "manifest.json"));
+}
+const uninstall = (runtime: Runtime) => runUninstall({ runtimes: [runtime], targetDir: root, opencodeTargetMajor: 2, dryRun: false, yes: true, removeEngram: false });
+const legacyEntry = (runtime: Runtime) => runtime === "pi"
+  ? { command: "browser-control-mcp", args: [] }
+  : { type: "local", command: ["browser-control-mcp"] };
+const modifiedLegacyEntry = (runtime: Runtime) => runtime === "pi"
+  ? { command: "browser-control-mcp", args: [], env: { DEBUG: "1" } }
+  : { type: "local", command: ["browser-control-mcp"], environment: { DEBUG: "1" } };
+const canonicalBrowse = (runtime: Runtime) => runtime === "pi"
+  ? { command: "browse", args: ["mcp"] }
+  : { type: "local", command: ["browse", "mcp"] };
+const modifiedBrowse = (runtime: Runtime) => runtime === "pi"
+  ? { command: "browse", args: ["mcp"], env: { DEBUG: "1" } }
+  : { type: "local", command: ["browse", "mcp"], environment: { DEBUG: "1" } };
 
 it.each(RUNTIMES)("keeps a personal absolute-path entry untouched and unclaimed (%s)", async (runtime) => {
   const raw = seed(runtime, entries[runtime].absolute);
@@ -153,17 +173,59 @@ it.each(RUNTIMES.flatMap((runtime) => entries[runtime].incompatible.map((entry) 
   });
 
 it.each(RUNTIMES)("retires a Stack-owned browser-control entry when migrating to browse (%s)", async (runtime) => {
-  const legacy = runtime === "pi" ? { command: "browser-control-mcp", args: [] } : { type: "local", command: ["browser-control-mcp"] };
-  seed(runtime, legacy, "browser-control");
-  writeRuntimeManifest(runtime, {
-    configDir: configDir(runtime), owned: [], mcpOwned: ["browser-control"], configOwned: [], packages: [],
-    updatedAt: new Date().toISOString(),
-  }, path.join(root, ".jorgex-stack", "manifest.json"));
+  seed(runtime, legacyEntry(runtime), "browser-control");
+  own(runtime, ["browser-control"]);
   expect(await target(runtime)).toBe(0);
   expect(serverEntry(runtime, "browser-control")).toBeUndefined();
   expect(serverEntry(runtime, "browse")).toBeDefined();
   expect(manifestRow(runtime)?.mcpOwned).toContain("browse");
   expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
+});
+
+it.each(RUNTIMES)("keeps a Stack-owned browser-control entry when Browse cannot be installed (%s)", async (runtime) => {
+  const raw = seed(runtime, legacyEntry(runtime), "browser-control");
+  own(runtime, ["browser-control"]);
+  onPath({});
+  const { exit, status } = await apply(runtime);
+  expect(exit).toBe(0);
+  expect(status).toHaveBeenCalledWith(runtime, "ok");
+  expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
+  expect(serverEntry(runtime, "browse")).toBeUndefined();
+  expect(manifestRow(runtime)?.mcpOwned).toContain("browser-control");
+  expect(manifestRow(runtime)?.mcpOwned).not.toContain("browse");
+  expect(warnings()).toMatch(/Browse no disponible/);
+  expect(warnings()).toContain("browser-control");
+});
+
+it.each(RUNTIMES)("keeps a modified Stack-owned browser-control entry but releases ownership (%s)", async (runtime) => {
+  const raw = seed(runtime, modifiedLegacyEntry(runtime), "browser-control");
+  own(runtime, ["browser-control"]);
+  expect(await target(runtime)).toBe(0);
+  expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
+  expect(serverEntry(runtime, "browse")).toBeDefined();
+  expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
+  expect(warn.mock.calls.filter(([message]) => /browser-control.*personalizado/i.test(String(message)))).toHaveLength(1);
+});
+
+it.each(RUNTIMES)("uninstall removes a canonical Stack-owned browse entry (%s)", async (runtime) => {
+  seed(runtime, canonicalBrowse(runtime));
+  own(runtime, ["browse"]);
+  expect(await uninstall(runtime)).toBe(0);
+  expect(serverEntry(runtime, "browse")).toBeUndefined();
+});
+
+it.each(RUNTIMES)("uninstall preserves a modified browse entry (%s)", async (runtime) => {
+  const raw = seed(runtime, modifiedBrowse(runtime));
+  own(runtime, ["browse"]);
+  expect(await uninstall(runtime)).toBe(0);
+  expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
+});
+
+it.each(RUNTIMES)("uninstall removes a canonical browser-control entry from a never-migrated install (%s)", async (runtime) => {
+  seed(runtime, legacyEntry(runtime), "browser-control");
+  own(runtime, ["browser-control"]);
+  expect(await uninstall(runtime)).toBe(0);
+  expect(serverEntry(runtime, "browser-control")).toBeUndefined();
 });
 
 it("doctor accepts the projection applied without Browse instead of failing the unit", async () => {

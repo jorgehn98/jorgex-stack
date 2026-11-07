@@ -700,22 +700,6 @@ export const opencodeAdapter: Adapter = {
         }
       }
 
-      // Migración: una entrada `browser-control` que el Stack registró se retira
-      // solo si sigue siendo el objeto canónico. Si el usuario la personalizó,
-      // se conserva y únicamente se libera el ownership.
-      if (ctx.ownedMcpServers?.has(LEGACY_BROWSER_CONTROL_SERVER) === true) {
-        const legacy = inContext(LEGACY_BROWSER_CONTROL_SERVER);
-        if (legacy !== undefined) {
-          if (isExactCanonicalBrowseServer(legacy, LEGACY_BROWSER_CONTROL_INVOCATION)) {
-            if (nativeServers !== null && LEGACY_BROWSER_CONTROL_SERVER in nativeServers) delete nativeServers[LEGACY_BROWSER_CONTROL_SERVER];
-            else if (existingMcp !== undefined) delete existingMcp[LEGACY_BROWSER_CONTROL_SERVER];
-          } else {
-            ctx.warnings.push("OpenCode: el MCP 'browser-control' anterior está personalizado; se conserva intacto y Browse se registra aparte.");
-          }
-        }
-        mcpOwnership.push({ server: LEGACY_BROWSER_CONTROL_SERVER, owned: false });
-      }
-
       const browse = ctx.browseInvocation;
       if (browse !== undefined) {
         const existing = inContext(BROWSE_SERVER);
@@ -727,6 +711,25 @@ export const opencodeAdapter: Adapter = {
           // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
           ctx.browseInvocation = undefined;
         }
+      }
+
+      // Migración: una entrada `browser-control` que el Stack registró se retira
+      // solo si sigue siendo el objeto canónico y Browse queda realmente
+      // proyectado. Sin sustituto disponible se conserva con su ownership para
+      // no dejar al usuario sin browser automation. Si el usuario la
+      // personalizó, se conserva y únicamente se libera el ownership.
+      if (ctx.browseInvocation !== undefined && ctx.ownedMcpServers?.has(LEGACY_BROWSER_CONTROL_SERVER) === true) {
+        const legacy = inContext(LEGACY_BROWSER_CONTROL_SERVER);
+        if (legacy !== undefined) {
+          if (isExactCanonicalBrowseServer(legacy, LEGACY_BROWSER_CONTROL_INVOCATION)) {
+            if (nativeServers !== null && LEGACY_BROWSER_CONTROL_SERVER in nativeServers) delete nativeServers[LEGACY_BROWSER_CONTROL_SERVER];
+            else if (existingMcp !== undefined) delete existingMcp[LEGACY_BROWSER_CONTROL_SERVER];
+          } else {
+            const notice = "OpenCode: el MCP 'browser-control' anterior está personalizado; se conserva intacto y Browse se registra aparte.";
+            if (!ctx.warnings.includes(notice)) ctx.warnings.push(notice);
+          }
+        }
+        mcpOwnership.push({ server: LEGACY_BROWSER_CONTROL_SERVER, owned: false });
       }
 
       // Los plugins locales viven en pluginsDir y OpenCode los AUTO-CARGA al

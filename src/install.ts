@@ -388,7 +388,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         }
         if (id === "pi" || id === "opencode") {
           browseProblem ??= ensureBrowse(execute);
-          if (browseProblem) ctx.warnings.push(`Browse no disponible: ${browseProblem}. No se añade su MCP ni su guía; el resto de la configuración continúa. Remedio: ejecuta \`pnpm setup\`, reabre la shell y vuelve a aplicar, o instala @opencode/browse con tu gestor preferido.`);
+          if (browseProblem) ctx.warnings.push(`Browse no disponible: ${browseProblem}. No se añade su MCP ni su guía y se conserva la entrada 'browser-control' anterior, si existía; el resto de la configuración continúa. Remedio: ejecuta \`pnpm setup\`, reabre la shell y vuelve a aplicar, o instala @opencode/browse con tu gestor preferido.`);
           else p.log.info("Browse: instala o actualiza su extensión desde la Chrome Web Store y conéctala; Stack no inicia el relay ni adopta pestañas por ti. `browse doctor` y `browse status` diagnostican el estado.");
         }
       }
