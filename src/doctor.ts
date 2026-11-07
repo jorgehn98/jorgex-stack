@@ -73,8 +73,8 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
       }
       if (configSelected && (id === "pi" || id === "opencode")) {
         // Mismo criterio que Aplicar: sin binario resoluble no se espera ni el MCP ni su guía.
-        if (opts.targetDir || lookPath("browser-control-mcp")) ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
-        else ctx.warnings.push("Browser Control ausente: no se comprueba su MCP ni su guía. Requiere Node>=22.19, extensión Chromium y adopción explícita de pestaña; doctor no lo instala ni inicia el relay.");
+        if (opts.targetDir || lookPath("browse")) ctx.browseInvocation = { command: "browse", args: ["mcp"] };
+        else ctx.warnings.push("Browse ausente: no se comprueba su MCP ni su guía. Requiere Node>=22.19, la extensión de la Chrome Web Store y emparejamiento; doctor no lo instala ni inicia el relay.");
       }
       const drift = diffPlan(buildScopedPlan(adapter, ctx, scope)).filter((change) => change.status !== "unchanged");
       for (const warning of ctx.warnings) p.log.warn(warning);

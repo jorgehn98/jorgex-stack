@@ -28,7 +28,7 @@ it("installing only shared skills has no native integration effects and preserve
   expect(manifest().runtimes.pi!.owned).toEqual(before);
   expect(await runDoctor({ ...scopeOptions(), scope: { section: "skills" } })).toBe(0);
 });
-it("Pi config removal preserves shared skills and other runtime Browser Control", async () => {
+it("Pi config removal preserves shared skills and other runtime Browse", async () => {
   expect(await runInstall(scopeOptions())).toBe(0);
   expect(await runInstall({ ...scopeOptions(), runtimes: ["opencode"], opencodeTargetMajor: 2 })).toBe(0);
   const openCodeMcp = path.join(root, "opencode", "opencode.json");
@@ -47,7 +47,7 @@ it("shared skills removal clears only shared claims across consumers and backs u
   expect(await runInstall({ ...scopeOptions(), runtimes: ["opencode"], opencodeTargetMajor: 2 })).toBe(0);
   expect(await runUninstall({ ...scopeOptions(), scope: { section: "skills" }, removeEngram: false })).toBe(0);
   expect(manifest().runtimes.opencode!.owned.some((file) => file.includes(`${path.sep}.agents${path.sep}skills${path.sep}`))).toBe(false);
-  expect(manifest().runtimes.pi!.mcpOwned).toContain("browser-control");
+  expect(manifest().runtimes.pi!.mcpOwned).toContain("browse");
   expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(false);
   expect(fs.existsSync(path.join(root, "pi-agent", "mcp.json"))).toBe(true);
   expect(fs.readdirSync(path.join(root, ".jorgex-stack", "backups")).length).toBeGreaterThan(0);

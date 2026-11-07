@@ -4,7 +4,7 @@ import fs from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { pathToFileURL } from "node:url";
 import type { Adapter, FileAction, InstallContext, McpOwnershipChange, ConfigOwnershipChange } from "./types.js";
-import { BROWSER_CONTROL_GUIDANCE, BROWSER_CONTROL_INCOMPATIBLE_WARNING, isBrowserControlCommand, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
+import { BROWSE_GUIDANCE, BROWSE_INCOMPATIBLE_WARNING, isBrowseCommand, LEGACY_BROWSER_CONTROL_INVOCATION, LEGACY_BROWSER_CONTROL_SERVER, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS, isCanonicalMcpServerEnabled } from "../lib/canonical.js";
 import type { CanonicalMcp } from "../lib/canonical.js";
 import { detectOpenCode } from "../lib/detect.js";
 import { HOME, resolveOpenCodeConfigDir, samePath } from "../lib/paths.js";
@@ -71,19 +71,18 @@ const CLIENT_ADDITIONAL_RESOURCES = [
   { source: "assets/opencode/tui/subagents/tui.tsx", target: "tui/subagents/tui.tsx" },
   { source: "assets/opencode/tui/subagents/state.mjs", target: "tui/subagents/state.mjs" },
 ] as const;
-const BROWSER_CONTROL_SERVER = "browser-control";
+const BROWSE_SERVER = "browse";
 
 /**
- * Un MCP manual `browser-control` solo equivale al launcher gestionado si es
- * local, está efectivamente habilitado y expuesto por Code Mode, y su command
- * es `[command, ...args]` con el nombre canónico o una ruta absoluta al mismo
- * binario (la invocación ya es `readyMCP`). No se
- * exige igualdad del objeto completo: los campos desconocidos del usuario se
- * preservan. Un `type` remoto, un command ausente/distinto, `disabled: true`
- * nativo, `enabled: false` legacy o `codemode: false` no pueden anunciar el MCP
- * obligatorio de Code Mode.
+ * Un MCP manual `browse` solo equivale al launcher gestionado si es local, está
+ * efectivamente habilitado y expuesto por Code Mode, y su command es
+ * `[command, ...args]` con el nombre canónico o una ruta absoluta al mismo
+ * binario (la invocación ya es `readyMCP`). No se exige igualdad del objeto
+ * completo: los campos desconocidos del usuario se preservan. Un `type` remoto,
+ * un command ausente/distinto, `disabled: true` nativo, `enabled: false`
+ * legacy o `codemode: false` no pueden anunciar el MCP obligatorio de Code Mode.
  */
-function isCompatibleBrowserControlServer(
+function isCompatibleBrowseServer(
   value: unknown,
   invocation: { command: string; args: readonly string[] },
 ): boolean {
@@ -92,19 +91,18 @@ function isCompatibleBrowserControlServer(
   if (entry["disabled"] === true || entry["enabled"] === false || entry["codemode"] === false) return false;
   const command = entry["command"];
   return Array.isArray(command)
-    && isBrowserControlCommand(command[0], invocation.command)
+    && isBrowseCommand(command[0], invocation.command)
     && isDeepStrictEqual(command.slice(1), [...invocation.args]);
 }
 
 /**
- * El objeto gestionado de Browser Control solo es el canónico EXACTO si su forma
- * completa es `{ type: 'local', command: [command, ...args] }`: sin campos
- * extra del usuario ni command/flags modificados. El uninstall retira el objeto
- * entero solo en ese caso; cualquier desviación se conserva íntegra y únicamente
- * libera la autoridad de ownership. La comparación usa la invocación ya
- * verificada, nunca una receta sobre `--eval` ni igualdad parcial de command.
+ * El objeto gestionado solo es el canónico EXACTO si su forma completa es
+ * `{ type: 'local', command: [command, ...args] }`: sin campos extra del usuario
+ * ni command/flags modificados. El uninstall retira el objeto entero solo en ese
+ * caso; cualquier desviación se conserva íntegra y únicamente libera la
+ * autoridad de ownership.
  */
-function isExactCanonicalBrowserControlServer(
+function isExactCanonicalBrowseServer(
   value: unknown,
   invocation: { command: string; args: readonly string[] },
 ): boolean {
@@ -526,7 +524,7 @@ export const opencodeAdapter: Adapter = {
   adaptSystemPromptSections(sections, ctx) {
     const adapted = { ...sections };
     delete adapted.playwright;
-    if (ctx.browserControlInvocation) adapted.browser = [sections.browser, BROWSER_CONTROL_GUIDANCE].filter(Boolean).join("\n\n");
+    if (ctx.browseInvocation) adapted.browser = [sections.browser, BROWSE_GUIDANCE].filter(Boolean).join("\n\n");
     return adapted;
   },
 
@@ -702,16 +700,32 @@ export const opencodeAdapter: Adapter = {
         }
       }
 
-      const browserControl = ctx.browserControlInvocation;
-      if (browserControl !== undefined) {
-        const existing = inContext(BROWSER_CONTROL_SERVER);
+      // Migración: una entrada `browser-control` que el Stack registró se retira
+      // solo si sigue siendo el objeto canónico. Si el usuario la personalizó,
+      // se conserva y únicamente se libera el ownership.
+      if (ctx.ownedMcpServers?.has(LEGACY_BROWSER_CONTROL_SERVER) === true) {
+        const legacy = inContext(LEGACY_BROWSER_CONTROL_SERVER);
+        if (legacy !== undefined) {
+          if (isExactCanonicalBrowseServer(legacy, LEGACY_BROWSER_CONTROL_INVOCATION)) {
+            if (nativeServers !== null && LEGACY_BROWSER_CONTROL_SERVER in nativeServers) delete nativeServers[LEGACY_BROWSER_CONTROL_SERVER];
+            else if (existingMcp !== undefined) delete existingMcp[LEGACY_BROWSER_CONTROL_SERVER];
+          } else {
+            ctx.warnings.push("OpenCode: el MCP 'browser-control' anterior está personalizado; se conserva intacto y Browse se registra aparte.");
+          }
+        }
+        mcpOwnership.push({ server: LEGACY_BROWSER_CONTROL_SERVER, owned: false });
+      }
+
+      const browse = ctx.browseInvocation;
+      if (browse !== undefined) {
+        const existing = inContext(BROWSE_SERVER);
         if (existing === undefined) {
-          writableServers()[BROWSER_CONTROL_SERVER] = { type: "local", command: [browserControl.command, ...browserControl.args] };
-          mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: true });
-        } else if (!isCompatibleBrowserControlServer(existing, browserControl)) {
-          ctx.warnings.push(`OpenCode: ${BROWSER_CONTROL_INCOMPATIBLE_WARNING}`);
+          writableServers()[BROWSE_SERVER] = { type: "local", command: [browse.command, ...browse.args] };
+          mcpOwnership.push({ server: BROWSE_SERVER, owned: true });
+        } else if (!isCompatibleBrowseServer(existing, browse)) {
+          ctx.warnings.push(`OpenCode: ${BROWSE_INCOMPATIBLE_WARNING}`);
           // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
-          ctx.browserControlInvocation = undefined;
+          ctx.browseInvocation = undefined;
         }
       }
 
@@ -908,18 +922,24 @@ export const opencodeAdapter: Adapter = {
             }
           }
           // Native MCP ownership is recorded in the common manifest. A modified entry stays untouched.
-          if (ctx.preserveEngram !== undefined && ctx.ownedMcpServers?.has(BROWSER_CONTROL_SERVER) === true) {
-            const entry = nativeServers?.[BROWSER_CONTROL_SERVER];
-            const invocation = ctx.browserControlInvocation;
-            if (entry !== undefined && invocation !== undefined) {
-              if (isExactCanonicalBrowserControlServer(entry, invocation)) {
-                removeServer(BROWSER_CONTROL_SERVER);
-              } else {
-                ctx.warnings.push(
-                  "OpenCode: el MCP 'browser-control' está personalizado/modificado respecto al comando nativo; se conserva completo y solo se libera el ownership.",
-                );
+          if (ctx.preserveEngram !== undefined) {
+            const native: Array<[string, { command: string; args: readonly string[] } | undefined]> = [
+              [BROWSE_SERVER, ctx.browseInvocation],
+              [LEGACY_BROWSER_CONTROL_SERVER, LEGACY_BROWSER_CONTROL_INVOCATION],
+            ];
+            for (const [name, invocation] of native) {
+              if (ctx.ownedMcpServers?.has(name) !== true) continue;
+              const entry = nativeServers?.[name];
+              if (entry !== undefined && invocation !== undefined) {
+                if (isExactCanonicalBrowseServer(entry, invocation)) {
+                  removeServer(name);
+                } else {
+                  ctx.warnings.push(
+                    `OpenCode: el MCP '${name}' está personalizado/modificado respecto al comando nativo; se conserva completo y solo se libera el ownership.`,
+                  );
+                }
               }
-              mcpOwnership.push({ server: BROWSER_CONTROL_SERVER, owned: false });
+              mcpOwnership.push({ server: name, owned: false });
             }
           }
           if (nativeServers !== null && Object.keys(nativeServers).length === 0) delete mcpBlock["servers"];

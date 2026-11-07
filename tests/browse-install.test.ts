@@ -4,7 +4,7 @@ import * as p from "@clack/prompts";
 import { afterEach, beforeEach, expect, it, vi, type MockInstance } from "vitest";
 import { runDoctor } from "../src/doctor.js";
 import { ADAPTERS, runInstall, type NativeExecutor } from "../src/install.js";
-import { readManifest } from "../src/lib/manifest.js";
+import { readManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 import * as detection from "../src/lib/detect.js";
 import { expectedEngramAssetName } from "../src/lib/github.js";
 
@@ -20,7 +20,7 @@ const RUNTIMES = ["opencode", "pi"] as const;
 let root: string;
 let warn: MockInstance<typeof p.log.warn>;
 beforeEach(() => {
-  root = fs.mkdtempSync("/var/tmp/jx-browser-control-"); isolated.root = root;
+  root = fs.mkdtempSync("/var/tmp/jx-browse-"); isolated.root = root;
   vi.spyOn(detection, "engramVersion").mockReturnValue("3.0.0");
   vi.spyOn(detection, "opencodeMajorVersion").mockReturnValue(2);
   warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
@@ -37,9 +37,9 @@ const mcpFile = (runtime: Runtime) => path.join(configDir(runtime), runtime === 
 const promptFile = (runtime: Runtime) => path.join(configDir(runtime), "AGENTS.md");
 const warnings = () => warn.mock.calls.map(([message]) => String(message)).join("\n");
 const manifestRow = (runtime: Runtime) => readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes[runtime];
-function browserControlEntry(runtime: Runtime): unknown {
+function serverEntry(runtime: Runtime, name: string): unknown {
   const config = JSON.parse(fs.readFileSync(mcpFile(runtime), "utf8"));
-  return (runtime === "pi" ? config.mcpServers : config.mcp?.servers)?.["browser-control"];
+  return (runtime === "pi" ? config.mcpServers : config.mcp?.servers)?.[name];
 }
 function onPath(resolved: Record<string, string>) {
   vi.spyOn(detection, "lookPath").mockImplementation((command) => resolved[command] ?? null);
@@ -66,22 +66,22 @@ async function apply(runtime: Runtime, failing: (bin: string, args: string[]) =>
   return { exit, status, pnpmCalls: calls.filter(([bin]) => bin === "/fake/pnpm") };
 }
 
-it.each(RUNTIMES)("does not call pnpm when browser-control-mcp already resolves on PATH (%s)", async (runtime) => {
-  onPath({ "browser-control-mcp": "/fake/npm/bin/browser-control-mcp", pnpm: "/fake/pnpm" });
+it.each(RUNTIMES)("does not call pnpm when browse already resolves on PATH (%s)", async (runtime) => {
+  onPath({ browse: "/fake/npm/bin/browse", pnpm: "/fake/pnpm" });
   const { exit, pnpmCalls } = await apply(runtime);
   expect(exit).toBe(0);
   expect(pnpmCalls).toEqual([]);
-  expect(browserControlEntry(runtime)).toBeDefined();
-  expect(manifestRow(runtime)?.mcpOwned).toContain("browser-control");
-  expect(fs.readFileSync(promptFile(runtime), "utf8")).toContain("browser-control-mcp");
+  expect(serverEntry(runtime, "browse")).toBeDefined();
+  expect(manifestRow(runtime)?.mcpOwned).toContain("browse");
+  expect(fs.readFileSync(promptFile(runtime), "utf8")).toContain("browse mcp");
 });
 
 it.each(RUNTIMES)("installs through pnpm only when the binary is missing (%s)", async (runtime) => {
   onPath({ pnpm: "/fake/pnpm" });
   const { exit, pnpmCalls } = await apply(runtime);
   expect(exit).toBe(0);
-  expect(pnpmCalls).toEqual([["/fake/pnpm", ["add", "@opencode-ai/browser-control@latest", "--global"]]]);
-  expect(browserControlEntry(runtime)).toBeDefined();
+  expect(pnpmCalls).toEqual([["/fake/pnpm", ["add", "@opencode/browse@latest", "--global"]]]);
+  expect(serverEntry(runtime, "browse")).toBeDefined();
 });
 
 it.each(RUNTIMES.flatMap((runtime) => [[runtime, "pnpm fails"], [runtime, "pnpm is missing"]] as const))(
@@ -90,43 +90,43 @@ it.each(RUNTIMES.flatMap((runtime) => [[runtime, "pnpm fails"], [runtime, "pnpm 
     const { exit, status } = await apply(runtime, (bin) => bin === "/fake/pnpm");
     expect(exit).toBe(0);
     expect(status).toHaveBeenCalledWith(runtime, "ok");
-    expect(warnings()).toMatch(/Browser Control/);
+    expect(warnings()).toMatch(/Browse/);
     expect(warnings()).toContain("pnpm setup");
-    expect(warnings()).toContain("@opencode-ai/browser-control");
-    expect(browserControlEntry(runtime)).toBeUndefined();
-    expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
+    expect(warnings()).toContain("@opencode/browse");
+    expect(serverEntry(runtime, "browse")).toBeUndefined();
+    expect(manifestRow(runtime)?.mcpOwned).not.toContain("browse");
     expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(true);
     const prompt = fs.readFileSync(promptFile(runtime), "utf8");
     expect(prompt).toContain("<!-- jorgex:browser -->");
-    expect(prompt).not.toContain("browser-control-mcp");
+    expect(prompt).not.toContain("browse mcp");
   });
 
-const ABSOLUTE = "/home/user/.local/bin/browser-control-mcp";
+const ABSOLUTE = "/home/user/.local/bin/browse";
 const entries: Record<Runtime, { absolute: object; incompatible: object[] }> = {
   opencode: {
-    absolute: { type: "local", command: [ABSOLUTE], environment: { DEBUG: "1" } },
+    absolute: { type: "local", command: [ABSOLUTE, "mcp"], environment: { DEBUG: "1" } },
     incompatible: [
       { type: "remote", url: "https://browser.invalid/mcp" },
-      { type: "local", command: ["browser-control-mcp"], disabled: true },
-      { type: "local", command: ["/opt/other/launcher"] },
+      { type: "local", command: ["browse", "mcp"], disabled: true },
+      { type: "local", command: ["/opt/other/launcher", "mcp"] },
     ],
   },
   pi: {
-    absolute: { command: ABSOLUTE, args: [], env: { DEBUG: "1" } },
+    absolute: { command: ABSOLUTE, args: ["mcp"], env: { DEBUG: "1" } },
     incompatible: [
       { url: "https://browser.invalid/mcp" },
-      { command: "browser-control-mcp", args: [], disabled: true },
-      { command: "/opt/other/launcher", args: [] },
+      { command: "browse", args: ["mcp"], disabled: true },
+      { command: "/opt/other/launcher", args: ["mcp"] },
     ],
   },
 };
-function seed(runtime: Runtime, entry: object): string {
+function seed(runtime: Runtime, entry: object, name = "browse"): string {
   fs.mkdirSync(configDir(runtime), { recursive: true });
-  const servers = { "browser-control": entry };
+  const servers = { [name]: entry };
   fs.writeFileSync(mcpFile(runtime), `${JSON.stringify(runtime === "pi" ? { mcpServers: servers } : { mcp: { servers } }, null, 2)}\n`);
   // The entry exactly as it sits in the file, indentation included.
   const indent = runtime === "pi" ? "    " : "      ";
-  return `"browser-control": ${JSON.stringify(entry, null, 2).replace(/\n/g, `\n${indent}`)}`;
+  return `"${name}": ${JSON.stringify(entry, null, 2).replace(/\n/g, `\n${indent}`)}`;
 }
 const target = (runtime: Runtime) => runInstall({ runtimes: [runtime], targetDir: root, opencodeTargetMajor: 2, dryRun: false, yes: true });
 
@@ -135,9 +135,9 @@ it.each(RUNTIMES)("keeps a personal absolute-path entry untouched and unclaimed 
   expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
   expect(await target(runtime)).toBe(0);
   expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
-  expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
-  expect(warnings()).not.toMatch(/Browser Control/i);
-  expect(fs.readFileSync(promptFile(runtime), "utf8")).toContain("browser-control-mcp");
+  expect(manifestRow(runtime)?.mcpOwned).not.toContain("browse");
+  expect(warnings()).not.toMatch(/Browse/i);
+  expect(fs.readFileSync(promptFile(runtime), "utf8")).toContain("browse mcp");
 });
 
 it.each(RUNTIMES.flatMap((runtime) => entries[runtime].incompatible.map((entry) => [runtime, entry] as const)))(
@@ -145,14 +145,28 @@ it.each(RUNTIMES.flatMap((runtime) => entries[runtime].incompatible.map((entry) 
     const raw = seed(runtime, entry);
     expect(await target(runtime)).toBe(0);
     expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
-    expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
-    expect(warn.mock.calls.filter(([message]) => /Browser Control/i.test(String(message)))).toHaveLength(1);
+    expect(manifestRow(runtime)?.mcpOwned).not.toContain("browse");
+    expect(warn.mock.calls.filter(([message]) => /Browse/i.test(String(message)))).toHaveLength(1);
     expect(fs.existsSync(path.join(root, ".agents", "skills", "lean-code", "SKILL.md"))).toBe(true);
-    expect(fs.readFileSync(promptFile(runtime), "utf8")).not.toContain("browser-control-mcp");
+    expect(fs.readFileSync(promptFile(runtime), "utf8")).not.toContain("browse mcp");
     expect(await runDoctor({ runtimes: [runtime], targetDir: root, opencodeTargetMajor: 2 })).toBe(0);
   });
 
-it("doctor accepts the projection applied without Browser Control instead of failing the unit", async () => {
+it.each(RUNTIMES)("retires a Stack-owned browser-control entry when migrating to browse (%s)", async (runtime) => {
+  const legacy = runtime === "pi" ? { command: "browser-control-mcp", args: [] } : { type: "local", command: ["browser-control-mcp"] };
+  seed(runtime, legacy, "browser-control");
+  writeRuntimeManifest(runtime, {
+    configDir: configDir(runtime), owned: [], mcpOwned: ["browser-control"], configOwned: [], packages: [],
+    updatedAt: new Date().toISOString(),
+  }, path.join(root, ".jorgex-stack", "manifest.json"));
+  expect(await target(runtime)).toBe(0);
+  expect(serverEntry(runtime, "browser-control")).toBeUndefined();
+  expect(serverEntry(runtime, "browse")).toBeDefined();
+  expect(manifestRow(runtime)?.mcpOwned).toContain("browse");
+  expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
+});
+
+it("doctor accepts the projection applied without Browse instead of failing the unit", async () => {
   onPath({});
   expect((await apply("pi", (bin) => bin === "/fake/pnpm")).exit).toBe(0);
   vi.spyOn(ADAPTERS.pi, "detect").mockReturnValue({ id: "pi", name: "Pi", installed: true, binPath: "/fake/pi", configDir: configDir("pi") });
@@ -160,15 +174,15 @@ it("doctor accepts the projection applied without Browser Control instead of fai
   const error = vi.spyOn(p.log, "error").mockImplementation(() => {});
   warn.mockClear();
   await runDoctor({ runtimes: ["pi"] });
-  expect(warnings()).toMatch(/Browser Control ausente/);
+  expect(warnings()).toMatch(/Browse ausente/);
   expect(error).not.toHaveBeenCalled();
 });
 
 it("accepts the canonical name, an absolute path to it and a Windows shim, and nothing that merely resembles it", async () => {
-  const { isBrowserControlCommand } = await import("../src/lib/canonical.js");
-  const compatible = (value: unknown) => isBrowserControlCommand(value, "browser-control-mcp");
-  for (const value of ["browser-control-mcp", "/home/user/.local/share/pnpm/browser-control-mcp",
-    "C:\\Users\\user\\AppData\\Local\\pnpm\\browser-control-mcp.cmd", "C:/Users/user/AppData/Local/pnpm/browser-control-mcp.CMD", "D:\\tools\\browser-control-mcp.exe"]) expect(compatible(value)).toBe(true);
-  for (const value of ["browser-control-mcp.cmd", "other-mcp", "/usr/bin/other-mcp", "relative/browser-control-mcp", "/usr/bin/browser-control-mcp.cmd",
-    "C:\\tools\\browser-control-mcp.js", "C:\\tools\\other.cmd", 7, null]) expect(compatible(value)).toBe(false);
+  const { isBrowseCommand } = await import("../src/lib/canonical.js");
+  const compatible = (value: unknown) => isBrowseCommand(value, "browse");
+  for (const value of ["browse", "/home/user/.local/share/pnpm/browse",
+    "C:\\Users\\user\\AppData\\Local\\pnpm\\browse.cmd", "C:/Users/user/AppData/Local/pnpm/browse.CMD", "D:\\tools\\browse.exe"]) expect(compatible(value)).toBe(true);
+  for (const value of ["browse.cmd", "other-mcp", "/usr/bin/other-mcp", "relative/browse", "/usr/bin/browse.cmd",
+    "C:\\tools\\browse.js", "C:\\tools\\other.cmd", 7, null]) expect(compatible(value)).toBe(false);
 });

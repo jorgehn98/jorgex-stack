@@ -60,7 +60,7 @@ The canonical workflow is [orchestrator](stack/skills/orchestrator/SKILL.md) and
 | --- | --- |
 | Claude Code | Native subagents, skill links, `~/.agents/AGENTS.md` with a minimal bridge in `~/.claude/CLAUDE.md`, and fresh permissions; official Engram plugin/MCP. No additional browser. |
 | Codex | Shared skills, global instructions and fresh permissions; official Engram plugin/hooks/MCP. No desktop browser added. |
-| OpenCode v2 | Native permissions, server `opencode.json(c)`, client `cli.json`, local panel `./tui/subagents`; full official Engram setup and Browser Control. V1 is not supported. |
+| OpenCode v2 | Native permissions, server `opencode.json(c)`, client `cli.json`, local panel `./tui/subagents`; full official Engram setup and Browse. V1 is not supported. |
 | Official Pi | Instructions, local header, MCP configuration, a fresh permission policy and the skills catalog visible to its general subagent; native extensions installed by Pi, including Engram and compact-tools. No imposed theme and no jorgex-pi installer. |
 
 Effective paths respect each runtime's native configuration and environment variables. Context7 uses an empty placeholder so every user connects their own account; credentials are never distributed. The [writing style](docs/references/writing-style.md) is projected into all runtimes, with no programmatic overlay.
@@ -75,7 +75,7 @@ Claude, Codex and OpenCode use the full official setup; Pi uses `gentle-engram` 
 
 ### Browser and delegation
 
-**Browser Control** is available only in OpenCode and Pi, through the provider's official CLI/MCP and Chromium extension, and requires Node >= 22.19. It needs explicit tab adoption and has no fallback to Playwright or DevTools. Stack does not supervise the relay or attach profiles. See [limits and security](docs/references/browser-automation.md).
+**Browse** is available only in OpenCode and Pi, through the provider's official MCP and Chrome Web Store extension, and requires Node >= 22.19. It drives the user's real Chromium-family browser with explicit tab adoption and handoffs, and has no fallback to Playwright or DevTools outside it. Stack does not run the relay or attach profiles. See [limits and security](docs/references/browser-automation.md).
 
 Delegation uses the runtime's general subagent with a role skill. The orchestrator declares each role's level (N1–N4) and effort; the ladder from level to model lives in your global instructions for that runtime, so Stack never pins provider model IDs or discovers catalogs. Without a ladder the child inherits the parent model. See [delegation](docs/references/delegation.md).
 
@@ -175,7 +175,7 @@ Trusted Publisher, former App resources and secrets, environments and rulesets r
 Reference documents are written in Spanish.
 
 - [Official Pi and extensions](docs/references/pi-runtime.md)
-- [Browser Control](docs/references/browser-automation.md)
+- [Browse](docs/references/browser-automation.md)
 - [Delegation](docs/references/delegation.md)
 - [Permissions](docs/references/permissions.md)
 - [Claude limits](docs/references/claude-code-limits.md)

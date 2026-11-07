@@ -68,7 +68,7 @@ export const SECRET_PATH_EXCEPTION = "*.env.example";
  * otra copia, así que fijar la ruta es una personalización legítima. En Windows
  * los gestores de paquetes exponen el binario como shim `.cmd` o `.exe`.
  */
-export function isBrowserControlCommand(value: unknown, command: string): boolean {
+export function isBrowseCommand(value: unknown, command: string): boolean {
   if (typeof value !== "string") return false;
   if (value === command) return true;
   if (path.isAbsolute(value)) return path.basename(value) === command;
@@ -76,13 +76,18 @@ export function isBrowserControlCommand(value: unknown, command: string): boolea
   return path.win32.isAbsolute(value) && shim.name === command && [".cmd", ".exe"].includes(shim.ext.toLowerCase());
 }
 
-export const BROWSER_CONTROL_INCOMPATIBLE_WARNING = "el MCP 'browser-control' existente no equivale al launcher nativo (remoto, deshabilitado u otro comando); se conserva intacto y sin reclamar. Browser Control queda bajo tu configuración y Stack no proyecta su guía.";
+/** Entrada MCP que versiones anteriores del Stack registraron; se retira al migrar a browse. */
+export const LEGACY_BROWSER_CONTROL_SERVER = "browser-control";
+export const LEGACY_BROWSER_CONTROL_INVOCATION = { command: "browser-control-mcp", args: [] } as const;
 
-export const BROWSER_CONTROL_GUIDANCE = [
-  "## Browser Control",
+export const BROWSE_INCOMPATIBLE_WARNING = "el MCP 'browse' existente no equivale al launcher nativo (remoto, deshabilitado u otro comando); se conserva intacto y sin reclamar. Browse queda bajo tu configuración y Stack no proyecta su guía.";
+
+export const BROWSE_GUIDANCE = [
+  "## Browse",
   "",
-  "- Use native MCP stdio (`browser-control-mcp`) or the provider CLI; consult the MCP `skill` tool for its workflow.",
-  "- Use the provider's unpacked Chromium extension and explicitly attach an authorized tab. The provider starts its relay on the first operational call, not discovery.",
-  "- After updates, reload the extension or restart the relay only when needed and without interrupting another session. Stack does not run a supervisor or service.",
-  "- Apply the Browser Use authorization and safety rules to this personal browser. Do not fall back to Playwright or DevTools.",
+  "- Drive the user's real Chromium-family browser through the `browse` MCP (stdio `browse mcp`) and its extension; logins and open tabs are already there. `browse doctor` and `browse status` diagnose setup and connection.",
+  "- Inspect with a fresh snapshot before acting, use the narrowest stable control and verify with a new page read.",
+  "- Ask before adopting an existing tab or authenticated profile. Give a session an `allowedOrigins` allowlist before typing stored secrets; never put credentials in execute source.",
+  "- When only a person can proceed (login, 2FA, passkey, captcha, payment), call `handoff` and wait. Never solve a captcha yourself or retry-loop a blocked site.",
+  "- Leave the browser tidy: `tabs_cleanup` or `session_reset` when finished. Do not fall back to Playwright or DevTools outside the `browse` integration.",
 ].join("\n");

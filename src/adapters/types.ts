@@ -79,7 +79,7 @@ export interface InstallContext {
   /** MCPs opcionales habilitados explícitamente para este runtime. */
   enabledMcpServers?: ReadonlySet<string>;
   /** Native stdio command; the provider owns relay startup and browser attachment. */
-  browserControlInvocation?: { command: string; args: readonly string[] };
+  browseInvocation?: { command: string; args: readonly string[] };
   /** Registros MCP que una escritura previa del stack creó realmente. */
   ownedMcpServers?: ReadonlySet<string>;
   /** Campos de configuración que una escritura previa del Stack creó. */

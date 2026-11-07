@@ -87,7 +87,7 @@ it("uses official unpinned Pi packages and native update, with no setup pi or pr
   const mcp = JSON.parse(fs.readFileSync(path.join(configDir, "mcp.json"), "utf8"));
   expect(mcp.mcpServers.engram).toBeUndefined();
   expect(mcp.mcpServers.context7.url).toBe("https://mcp.context7.com/mcp");
-  expect(mcp.mcpServers["browser-control"]).toEqual({ command: "browser-control-mcp", args: [] });
+  expect(mcp.mcpServers.browse).toEqual({ command: "browse", args: ["mcp"] });
 });
 
 it("reports a package failure as partial and retains completed native registrations without global rollback", async () => {
@@ -156,7 +156,7 @@ it.each(["claude-code", "codex"] as const)("refreshes complete official Engram o
   expect(globalThis.fetch).toHaveBeenCalledOnce();
   expect(calls.some(([, args]) => args[0] === "export")).toBe(false);
   expect(calls).toContainEqual(["/fake/engram", runtime === "claude-code" ? ["setup", runtime, "--protocol=slim"] : ["setup", runtime]]);
-  expect(calls.some(([, args]) => args.some((arg) => /browser-control/.test(arg)))).toBe(false);
+  expect(calls.some(([, args]) => args.some((arg) => /browser-control|@opencode\/browse/.test(arg)))).toBe(false);
   if (runtime === "claude-code") expect(calls).toContainEqual(["/fake/claude-code", ["plugin", "update", "engram"]]);
   else {
     expect(calls).toContainEqual(["/fake/codex", ["update"]]);
@@ -221,13 +221,13 @@ it("labels a native step with its package identifier and never with a path, a fl
   expect(label("/usr/bin/pi", ["install", "npm:pi-subagents"])).toBe("Paso nativo en curso: pi install npm:pi-subagents");
   expect(label("/usr/bin/pi", ["install", "npm:@gotgenes/pi-permission-system"])).toBe("Paso nativo en curso: pi install npm:@gotgenes/pi-permission-system");
   expect(label("/usr/bin/pi", ["remove", "npm:jorgex-pi@0.8.29"])).toBe("Paso nativo en curso: pi remove npm:jorgex-pi@0.8.29");
-  expect(label("/usr/bin/pnpm", ["add", "@opencode-ai/browser-control@latest"])).toBe("Paso nativo en curso: pnpm add @opencode-ai/browser-control@latest");
+  expect(label("/usr/bin/pnpm", ["add", "@opencode/browse@latest"])).toBe("Paso nativo en curso: pnpm add @opencode/browse@latest");
   for (const unsafe of ["/home/user/.engram/export.json", "./local-package", "../sibling", "~/package", "C:\\Users\\user\\pkg", "npm:../escape", "export.json", "relative/path", "name@../escape", "TOKEN_value", "build2", "0123456789abcdef"]) {
     expect(label("/usr/bin/pi", ["install", unsafe])).toBe("Paso nativo en curso: pi install");
   }
   // A flag ends the label: its value and anything after it stay out, even a well-formed package.
-  expect(label("/usr/bin/pnpm", ["add", "--global", "@opencode-ai/browser-control@latest"])).toBe("Paso nativo en curso: pnpm add");
-  expect(label("/usr/bin/pnpm", ["add", "@opencode-ai/browser-control@latest", "--global"])).toBe("Paso nativo en curso: pnpm add @opencode-ai/browser-control@latest");
+  expect(label("/usr/bin/pnpm", ["add", "--global", "@opencode/browse@latest"])).toBe("Paso nativo en curso: pnpm add");
+  expect(label("/usr/bin/pnpm", ["add", "@opencode/browse@latest", "--global"])).toBe("Paso nativo en curso: pnpm add @opencode/browse@latest");
   expect(label("/usr/bin/claude", ["mcp", "remove", "engram", "--scope", "user"])).toBe("Paso nativo en curso: claude mcp remove engram");
   // Only one identifier is shown; a second positional value is never appended.
   expect(label("/usr/bin/pi", ["install", "npm:pi-subagents", "npm:pi-web-access"])).toBe("Paso nativo en curso: pi install npm:pi-subagents");
