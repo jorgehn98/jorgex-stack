@@ -364,7 +364,6 @@ function hostEnv(root: string, password?: string): NodeJS.ProcessEnv {
     OPENCODE_FILEWATCHER_DISABLE: "1",
     NO_COLOR: "1",
     TERM: "xterm-256color",
-    BROWSER_CONTROL_PORT: "19998",
   };
   if (password !== undefined) env.OPENCODE_PASSWORD = password;
   return env;

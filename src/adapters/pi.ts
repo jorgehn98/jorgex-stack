@@ -3,7 +3,7 @@ import { readTextIfExists } from "../lib/fsx.js";
 import { planOwnedProjection } from "../lib/owned-projection.js";
 import fs from "node:fs";
 import path from "node:path";
-import { BROWSER_CONTROL_GUIDANCE, BROWSER_CONTROL_INCOMPATIBLE_WARNING, isBrowserControlCommand, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS } from "../lib/canonical.js";
+import { BROWSE_GUIDANCE, BROWSE_INCOMPATIBLE_WARNING, isBrowseCommand, LEGACY_BROWSER_CONTROL_INVOCATION, LEGACY_BROWSER_CONTROL_SERVER, SECRET_PATH_EXCEPTION, SECRET_PATH_PATTERNS } from "../lib/canonical.js";
 import type { Adapter, FileAction, InstallContext } from "./types.js";
 import { HOME, samePath } from "../lib/paths.js";
 import { detectPi } from "../lib/detect.js";
@@ -101,7 +101,7 @@ export const piAdapter: Adapter = {
   name: "Pi",
   detect: detectPi,
   adaptSystemPromptSections(sections, ctx) {
-    return ctx.browserControlInvocation ? { ...sections, browser: [sections.browser, BROWSER_CONTROL_GUIDANCE].filter(Boolean).join("\n\n") } : sections;
+    return ctx.browseInvocation ? { ...sections, browser: [sections.browser, BROWSE_GUIDANCE].filter(Boolean).join("\n\n") } : sections;
   },
   planUnmerge(canonical, ctx) {
     const prompt = path.join(ctx.configDir, "AGENTS.md");
@@ -114,8 +114,9 @@ export const piAdapter: Adapter = {
         const current = root.mcpServers[name];
         if (!isRecord(current)) continue;
         const canonicalContext = { url: canonical.servers.context7?.url, headers: { CONTEXT7_API_KEY: "" } };
-        const canonicalBrowser = { command: "browser-control-mcp", args: [] };
-        const expected = name === "context7" ? canonicalContext : name === "browser-control" ? canonicalBrowser : null;
+        const canonicalBrowse = { command: "browse", args: ["mcp"] };
+        const canonicalLegacy = { command: LEGACY_BROWSER_CONTROL_INVOCATION.command, args: [...LEGACY_BROWSER_CONTROL_INVOCATION.args] };
+        const expected = name === "context7" ? canonicalContext : name === "browse" ? canonicalBrowse : name === LEGACY_BROWSER_CONTROL_SERVER ? canonicalLegacy : null;
         if (expected && JSON.stringify(current) === JSON.stringify(expected)) delete root.mcpServers[name];
       }
     }) });
@@ -186,20 +187,35 @@ export const piAdapter: Adapter = {
       created = true;
     });
     const ownership = created ? [{ server: "context7", owned: true }] : [];
-    const nativeContent = ctx.browserControlInvocation ? upsertJson(content, (root) => {
+    const legacy = JSON.stringify({ command: LEGACY_BROWSER_CONTROL_INVOCATION.command, args: [...LEGACY_BROWSER_CONTROL_INVOCATION.args] });
+    const nativeContent = upsertJson(content, (root) => {
       const servers = root.mcpServers as Record<string, unknown>;
-      if (servers["browser-control"] === undefined) {
-        servers["browser-control"] = { command: ctx.browserControlInvocation!.command, args: [...ctx.browserControlInvocation!.args] };
-        ownership.push({ server: "browser-control", owned: true });
-      } else {
-        const current = servers["browser-control"];
-        if (!isRecord(current) || !isBrowserControlCommand(current.command, ctx.browserControlInvocation!.command) || JSON.stringify(current.args ?? []) !== JSON.stringify(ctx.browserControlInvocation!.args) || current.enabled === false || current.disabled === true) {
-          ctx.warnings.push(`Pi: ${BROWSER_CONTROL_INCOMPATIBLE_WARNING}`);
-          // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
-          ctx.browserControlInvocation = undefined;
+      if (ctx.browseInvocation !== undefined) {
+        if (servers["browse"] === undefined) {
+          servers["browse"] = { command: ctx.browseInvocation.command, args: [...ctx.browseInvocation.args] };
+          ownership.push({ server: "browse", owned: true });
+        } else {
+          const current = servers["browse"];
+          if (!isRecord(current) || !isBrowseCommand(current.command, ctx.browseInvocation.command) || JSON.stringify(current.args ?? []) !== JSON.stringify(ctx.browseInvocation.args) || current.enabled === false || current.disabled === true) {
+            ctx.warnings.push(`Pi: ${BROWSE_INCOMPATIBLE_WARNING}`);
+            // Sin launcher equivalente tampoco se proyecta la guía que lo anuncia.
+            ctx.browseInvocation = undefined;
+          }
         }
       }
-    }) : content;
+      // Sin Browse proyectado se conserva la entrada anterior y su ownership.
+      if (ctx.browseInvocation !== undefined && ctx.ownedMcpServers?.has(LEGACY_BROWSER_CONTROL_SERVER) === true) {
+        const current = servers[LEGACY_BROWSER_CONTROL_SERVER];
+        if (current !== undefined) {
+          if (JSON.stringify(current) === legacy) delete servers[LEGACY_BROWSER_CONTROL_SERVER];
+          else {
+            const notice = "Pi: el MCP 'browser-control' anterior está personalizado; se conserva intacto y Browse se registra aparte.";
+            if (!ctx.warnings.includes(notice)) ctx.warnings.push(notice);
+          }
+        }
+        ownership.push({ server: LEGACY_BROWSER_CONTROL_SERVER, owned: false });
+      }
+    });
     const subagentTarget = path.join(ctx.configDir, SUBAGENT_CONFIG);
     const { raw, config } = readSubagentConfig(subagentTarget);
     const subagentActions: FileAction[] = Object.hasOwn(config, "timeoutMs") ? [] : [{

@@ -1,5 +1,5 @@
 {
-  "$comment": "Context7 compartido, sin secretos. Engram lo configura íntegramente su proveedor oficial; Browser Control utiliza MCP nativo en OpenCode/Pi.",
+  "$comment": "Context7 compartido, sin secretos. Engram lo configura íntegramente su proveedor oficial; Browse utiliza MCP nativo en OpenCode/Pi.",
   "servers": {
     "context7": {
       "transport": "http",

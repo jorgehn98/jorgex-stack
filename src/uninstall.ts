@@ -34,7 +34,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<number> {
       const adapter = ADAPTERS[id];
       const ctx = makeContext(adapter, configDirectory(id, opts.targetDir), opts.targetDir);
       ctx.preserveEngram = true;
-      ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
+      ctx.browseInvocation = { command: "browse", args: ["mcp"] };
       const otherRows = Object.entries(manifest.runtimes).filter(([runtime]) => runtime !== id).map(([, entry]) => entry!);
       const referenced = new Set(scope.section === "skills" ? [] : otherRows.flatMap((entry) => entry.owned));
       const sharedPrompt = adapter.paths(ctx.configDir).sharedPromptFile;

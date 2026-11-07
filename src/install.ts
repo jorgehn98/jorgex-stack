@@ -54,17 +54,17 @@ export function announceNative(execute: NativeExecutor): NativeExecutor {
     return execute(bin, args, env);
   };
 }
-const BROWSER_CONTROL_BIN = "browser-control-mcp";
+const BROWSE_BIN = "browse";
 /**
- * Browser Control es opcional: una copia ya resoluble en el PATH se respeta sea
- * cual sea su gestor, y un fallo de instalación se devuelve como causa en lugar
- * de abortar la unidad. Cadena vacía significa disponible.
+ * Browse es opcional: una copia ya resoluble en el PATH se respeta sea cual sea
+ * su gestor, y un fallo de instalación se devuelve como causa en lugar de
+ * abortar la unidad. Cadena vacía significa disponible.
  */
-function ensureBrowserControl(execute: NativeExecutor): string {
-  if (lookPath(BROWSER_CONTROL_BIN)) return "";
+function ensureBrowse(execute: NativeExecutor): string {
+  if (lookPath(BROWSE_BIN)) return "";
   const pnpm = lookPath("pnpm");
   if (!pnpm) return "falta en el PATH y pnpm tampoco está disponible para instalarlo";
-  try { execute(pnpm, ["add", "@opencode-ai/browser-control@latest", "--global"]); return ""; }
+  try { execute(pnpm, ["add", "@opencode/browse@latest", "--global"]); return ""; }
   catch { return "falló `pnpm add --global`; la causa probable es que pnpm no tiene directorio global configurado (ERR_PNPM_NO_GLOBAL_BIN_DIR)"; }
 }
 export interface InstallOptions extends OpenCodeTargetEvidenceOption {
@@ -262,7 +262,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
   }
   let exitCode = 0;
   // undefined: sin comprobar (o ejecución sin efectos nativos); "": disponible; texto: causa del fallo.
-  let browserControlProblem: string | undefined;
+  let browseProblem: string | undefined;
   let manifestBackedUp = false;
   // Shared paths are planned once per runtime: a declined file is not asked about again in the same run.
   const declinedAdoptions = new Set<string>();
@@ -387,12 +387,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           if (id === "opencode") retireExtraEngramMonitor(configDir, path.join(state, "backups"), createdTui);
         }
         if (id === "pi" || id === "opencode") {
-          browserControlProblem ??= ensureBrowserControl(execute);
-          if (browserControlProblem) ctx.warnings.push(`Browser Control no disponible: ${browserControlProblem}. No se añade su MCP ni su guía; el resto de la configuración continúa. Remedio: ejecuta \`pnpm setup\`, reabre la shell y vuelve a aplicar, o instala @opencode-ai/browser-control con tu gestor preferido.`);
-          else p.log.info("Browser Control: carga la extensión Chromium del proveedor y adjunta una pestaña explícitamente. Tras actualizar, recarga la extensión/reinicia el relay con el proveedor; Stack no detiene sesiones ajenas.");
+          browseProblem ??= ensureBrowse(execute);
+          if (browseProblem) ctx.warnings.push(`Browse no disponible: ${browseProblem}. No se añade su MCP ni su guía y se conserva la entrada 'browser-control' anterior, si existía; el resto de la configuración continúa. Remedio: ejecuta \`pnpm setup\`, reabre la shell y vuelve a aplicar, o instala @opencode/browse con tu gestor preferido.`);
+          else p.log.info("Browse: instala o actualiza su extensión desde la Chrome Web Store y conéctala; Stack no inicia el relay ni adopta pestañas por ti. `browse doctor` y `browse status` diagnostican el estado.");
         }
       }
-      if ((id === "pi" || id === "opencode") && !browserControlProblem) ctx.browserControlInvocation = { command: BROWSER_CONTROL_BIN, args: [] };
+      if ((id === "pi" || id === "opencode") && !browseProblem) ctx.browseInvocation = { command: BROWSE_BIN, args: ["mcp"] };
       phase = "proyección";
       const projected = buildScopedPlan(adapter, ctx, scope);
       const adopted: FileAction[] = [];

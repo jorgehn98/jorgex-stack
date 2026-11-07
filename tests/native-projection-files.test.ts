@@ -109,7 +109,7 @@ describe("native projection filesystem boundaries", () => {
   it.each([claudeCodeAdapter, codexAdapter, opencodeAdapter, piAdapter])("projects the separate browser module without duplicating legacy guidance (%s)", (adapter) => {
     ctx.stackDir = path.resolve("stack");
     ctx.configDir = path.join(root, adapter.id);
-    ctx.browserControlInvocation = { command: "browser-control-mcp", args: [] };
+    ctx.browseInvocation = { command: "browse", args: ["mcp"] };
     const paths = adapter.paths(ctx.configDir);
     const target = paths.sharedPromptFile ?? paths.systemPromptFile;
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -121,7 +121,7 @@ describe("native projection filesystem boundaries", () => {
     const module = fs.readFileSync(path.join(ctx.stackDir, "system-prompt", "browser-use.md"), "utf8").trim();
     expect(browser).toContain(module);
     expect(core).not.toContain(module);
-    expect(browser?.includes("browser-control-mcp")).toBe(adapter.id === "opencode" || adapter.id === "pi");
+    expect(browser?.includes("browse mcp")).toBe(adapter.id === "opencode" || adapter.id === "pi");
     expect(prompt).toContain("User policy");
     expect(prompt).not.toContain("Old browser guide");
     expect(prompt).not.toContain("<!-- jorgex:browser-control -->");
