@@ -228,6 +228,29 @@ it.each(RUNTIMES)("uninstall removes a canonical browser-control entry from a ne
   expect(serverEntry(runtime, "browser-control")).toBeUndefined();
 });
 
+it.each(RUNTIMES)("uninstall preserves a modified browser-control entry (%s)", async (runtime) => {
+  const raw = seed(runtime, modifiedLegacyEntry(runtime), "browser-control");
+  own(runtime, ["browser-control"]);
+  expect(await uninstall(runtime)).toBe(0);
+  expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
+});
+
+it.each(RUNTIMES)("migrates on a later apply once Browse is available (%s)", async (runtime) => {
+  const raw = seed(runtime, legacyEntry(runtime), "browser-control");
+  own(runtime, ["browser-control"]);
+  onPath({});
+  expect((await apply(runtime)).exit).toBe(0);
+  expect(fs.readFileSync(mcpFile(runtime), "utf8")).toContain(raw);
+  expect(manifestRow(runtime)?.mcpOwned).toContain("browser-control");
+
+  onPath({ browse: "/fake/bin/browse", pnpm: "/fake/pnpm" });
+  expect((await apply(runtime)).exit).toBe(0);
+  expect(serverEntry(runtime, "browser-control")).toBeUndefined();
+  expect(serverEntry(runtime, "browse")).toBeDefined();
+  expect(manifestRow(runtime)?.mcpOwned).toContain("browse");
+  expect(manifestRow(runtime)?.mcpOwned).not.toContain("browser-control");
+});
+
 it("doctor accepts the projection applied without Browse instead of failing the unit", async () => {
   onPath({});
   expect((await apply("pi", (bin) => bin === "/fake/pnpm")).exit).toBe(0);
