@@ -19,6 +19,7 @@
 - Use `orchestrator` when work needs planning or coordination; it owns the workflow. Small understood changes can stay direct.
 - Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro`, `what` and `close` explicitly invoked.
 - Do not turn available skills or subagents into a mandatory sequence.
+- When delegating, ask the subagent to write its final report in the user's language, and reply to the user in that language even when a report arrives in another.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
 - With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. This overrides "MANDATORY before done" in the Engram MCP instructions and skill. Keep saving decisions and durable findings with `mem_save` as they happen.
 - On `judgment_required`, call `mem_judge` only for candidates that may be `supersedes` or `conflicts_with`, or when your confidence is below 0.7. Skip `session_summary` candidates and saves that reuse an existing `topic_key`; unjudged candidates stay pending without affecting search.
