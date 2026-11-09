@@ -17,7 +17,7 @@
 - Do not add dependencies without approval or silently expand the agreed scope.
 - Use `lean-code` before significant code decisions and `diagnose` for failures.
 - Use `orchestrator` when work needs planning or coordination; it owns the workflow. Small understood changes can stay direct.
-- Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro` and `what` explicitly invoked.
+- Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro`, `what` and `close` explicitly invoked.
 - Do not turn available skills or subagents into a mandatory sequence.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.
 - With Engram, call `mem_session_summary` once, when the user explicitly closes the session, and after a context compaction; finishing an answer or an intermediate task is not a close. This overrides "MANDATORY before done" in the Engram MCP instructions and skill. Keep saving decisions and durable findings with `mem_save` as they happen.
