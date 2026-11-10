@@ -6,7 +6,7 @@
 
 Comprobados el 10-nov-2026 con `skills@1.8.0`, HOME aislado, sin telemetría y contra un clon local del repositorio:
 
-- `skills add <repo> --list` encuentra las skills en `stack/skills/<categoría>/<skill>` por su búsqueda recursiva, sin configuración.
+- `skills add <repo> --list` encontró las 21 skills de entonces en `stack/skills/<categoría>/<skill>` por su búsqueda recursiva, sin configuración (comprobación anterior a `software-factory`, no repetida; el test de `skills.sh.json` cubre el manifiesto).
 - El esquema oficial (`https://skills.sh/schemas/skills.sh.schema.json`) admite en `skills.sh.json`:
   - `paths`: carpetas contenedoras dentro del repositorio, con prefijo `./`.
   - `groupings`: `title`, `description` opcional y `skills` (nombres).
