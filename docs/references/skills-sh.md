@@ -1,12 +1,12 @@
 # Compatibilidad con skills.sh
 
-`skills.sh` es la CLI (y el catálogo) de skills individuales de [skills.sh](https://skills.sh). Stack publica en su propio repositorio el archivo `skills.sh.json` para que la página del repositorio agrupe las veintiuna skills por categoría y la ruta de búsqueda quede explícita, sin crear un segundo repositorio ni un canal de instalación propio.
+`skills.sh` es la CLI (y el catálogo) de skills individuales de [skills.sh](https://skills.sh). Stack publica en su propio repositorio el archivo `skills.sh.json` para que la página del repositorio agrupe las veintidós skills por categoría y la ruta de búsqueda quede explícita, sin crear un segundo repositorio ni un canal de instalación propio.
 
 ## Hechos verificados
 
 Comprobados el 10-nov-2026 con `skills@1.8.0`, HOME aislado, sin telemetría y contra un clon local del repositorio:
 
-- `skills add <repo> --list` encuentra las **21 skills** en `stack/skills/<categoría>/<skill>` por su búsqueda recursiva, sin configuración.
+- `skills add <repo> --list` encuentra las skills en `stack/skills/<categoría>/<skill>` por su búsqueda recursiva, sin configuración.
 - El esquema oficial (`https://skills.sh/schemas/skills.sh.schema.json`) admite en `skills.sh.json`:
   - `paths`: carpetas contenedoras dentro del repositorio, con prefijo `./`.
   - `groupings`: `title`, `description` opcional y `skills` (nombres).
