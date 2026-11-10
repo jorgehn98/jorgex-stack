@@ -48,14 +48,14 @@ Missing runtimes are not installed when you open a screen. Updating configuratio
 
 ### Install individual skills
 
-[skills.sh](https://skills.sh) can install these skills as plain folders, without the menu:
+[skills.sh](https://skills.sh) can install these skills as plain folders, without the menu. Without `-g` the CLI installs into the current project instead of your user directories:
 
 ```sh
-npx skills add jorgehn98/jorgex-stack
-npx skills add jorgehn98/jorgex-stack --skill implementer
+npx skills add jorgehn98/jorgex-stack -g
+npx skills add jorgehn98/jorgex-stack -g --skill implementer
 ```
 
-`engineering` requires `productivity`, because the orchestrator uses `to-spec`, `grilling` and `second-opinion`; install both categories together. This route brings only the skill folders: no system prompt, Engram setup, hooks, MCP configuration or runtime files, and some skills rely on that context. It is a partial install, not a replacement for Stack. Do not mix both channels over the same skills: the CLI overwrites an existing copy without warning (and replaces Claude Code's link with a copied directory), after which Stack's Update cannot refresh that skill. See [skills.sh compatibility](docs/references/skills-sh.md).
+`engineering` requires `productivity`, because the orchestrator uses `to-spec`, `grilling` and `second-opinion`; the CLI has no per-category install, so add the whole repository, or the six `productivity` skills alongside the ones you choose. This route brings only the skill folders: no system prompt, Engram setup, hooks, MCP configuration or runtime files, and some skills rely on that context. It is a partial install, not a replacement for Stack. Do not mix both channels over the same skills: the CLI overwrites an existing copy in `~/.agents/skills` without warning, so each tool then reverts the other's version on its next run, and it replaces Claude Code's link with a copied directory, which Stack's Update will then reject (by reading the code; not run). See [skills.sh compatibility](docs/references/skills-sh.md).
 
 ## Shared canon
 
