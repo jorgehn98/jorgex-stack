@@ -4,7 +4,7 @@
 
 ## Qué es y qué no es
 
-Es la capa de entrada de una software factory pequeña: agentes que hacen la mayor parte de la producción, personas que definen la intención y los criterios de aceptación y aprueban. Sube Stack al nivel 4 de la escala de Shapiro, sin llegar al 5, la dark factory (sin humano que escriba ni revise código), que Stack no busca. Buena parte de la bibliografía son blogs de empresas que venden herramientas; lo verificable es el modelo de Shapiro y el manifiesto de StrongDM de febrero de 2026.
+Es la capa de entrada de una software factory pequeña: agentes que hacen la mayor parte de la producción, personas que definen la intención y los criterios de aceptación y aprueban. Sube Stack al nivel 4 de la escala de Shapiro, sin llegar al 5, la dark factory (sin humano que escriba ni revise código), que Stack no busca. La clasificación de niveles es la de Shapiro y el manifiesto de la dark factory es el de StrongDM (febrero de 2026); ambas son lecturas externas que no están recogidas en este repositorio, y buena parte de la bibliografía son blogs de empresas que venden herramientas.
 
 ## Dos modos
 
@@ -13,7 +13,7 @@ Es la capa de entrada de una software factory pequeña: agentes que hacen la may
 
 ## Qué autoriza cada compuerta
 
-La aprobación del plan en proyecto nuevo cubre, y solo si el plan las nombra, estas acciones: crear el repositorio privado, el commit inicial mínimo en `main`, la rama del MVP, su push y la PR en draft. No cubre repositorio público, merge ni despliegue. En modo issue, la invocación concede el recorrido en navegador, el push de la rama y la PR en draft. El merge es siempre por orden explícita.
+La aprobación del plan en proyecto nuevo cubre el recorrido en navegador (pestañas propias, sin sesiones ni datos personales) y, solo si el plan las nombra, estas acciones: crear el repositorio privado, el commit inicial mínimo en `main`, la rama del MVP, su push y la PR en draft. No cubre repositorio público, merge ni despliegue. En modo issue, la invocación concede el recorrido en navegador, el push de la rama y la PR en draft. El merge es siempre por orden explícita.
 
 ## Criterio de autonomía
 
@@ -25,7 +25,7 @@ Doble: tests de lo crítico y recorrido de cada escenario de aceptación sobre l
 
 ## Validación y estado
 
-Revisada de forma adversarial y recorrida en seco, sin ejecutar nada, sobre dos issues reales de PhotoHeart el 10-nov-2026: uno pequeño y sin zonas protegidas, y otro que resultó ser un épico ya implementado, que obligó a añadir el triaje del issue. **No se ha ejecutado de verdad**; los fallos que solo aparecen al usarla están por descubrir.
+En la PR #286 se revisó de forma adversarial dos veces y se recorrió en seco, sin ejecutar nada, sobre dos issues reales de PhotoHeart (10-nov-2026): uno pequeño y sin zonas protegidas, y otro que resultó ser un épico ya implementado, que obligó a añadir el triaje del issue. **No se ha ejecutado de verdad**; los fallos que solo aparecen al usarla están por descubrir.
 
 ## Lo que se aprendió de otros planteamientos
 
