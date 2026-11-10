@@ -6,7 +6,7 @@ import { runInstall } from "../src/install.js";
 import { readManifest, writeRuntimeManifest } from "../src/lib/manifest.js";
 
 const ROLES = ["analyst", "implementer", "reviewer", "security-auditor", "simplifier"] as const;
-const ROOT = path.resolve("stack/skills");
+const ROOT = path.resolve("stack/skills/engineering");
 
 let root: string;
 beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-role-skills-")); });

@@ -54,5 +54,5 @@ These rules apply, exactly as written, to every task that changes code, includin
 ## Limits
 
 - Present the plan for user approval.
-- Planning does not implement, publish, merge or authorize changes to a personal installation.
-- The orchestrator owns execution, tracking and cleanup.
+- Planning does not implement, publish, merge or authorize changes to a live system or installation.
+- Execution, tracking and cleanup belong to whoever executes the work; in code work, the orchestrator.

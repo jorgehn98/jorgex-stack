@@ -10,6 +10,8 @@ import { cleanResidues, pruneBackups } from "./cleanup.js";
 import { runUninstall } from "./uninstall.js";
 import { readManifest } from "./lib/manifest.js";
 import { detectEngram } from "./lib/detect.js";
+import { stackRoot } from "./lib/paths.js";
+import { listSkillCategories, resolveSkillCategories } from "./components/skills.js";
 import type { OperationScope } from "./lib/operation-scope.js";
 
 type Action = "install" | "update" | "doctor" | "uninstall";
@@ -18,11 +20,15 @@ type Option = { value: string; label: string };
 export interface MenuOperations {
   detect(): RuntimeId[];
   operate(action: Action, scope: OperationScope, runtimes: RuntimeId[]): Promise<number>;
+  /** Categorías del origen de skills, para el multiselect de Instalar. */
+  skillCategories(): Option[];
   managed?(): RuntimeId[];
   clean(unit: CleanUnit, ui: MenuUI): Promise<number>;
 }
 export interface MenuUI {
   select(route: string, options: Option[]): Promise<string>;
+  /** Multiselect de categorías; cancelar vuelve atrás sin aplicar. */
+  multiselect(route: string, options: Option[], initial: string[]): Promise<string[] | "back">;
   confirm(message: string): Promise<boolean>;
   info(message: string): void;
 }
@@ -53,8 +59,19 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
       if (choice === "back") return;
       if (scope.section === "all" || scope.section === "skills") ui.info("Skills compartidas: alcance global, visible también para otros runtimes; no son copias aisladas por runtime.");
       if (action === "uninstall" && !await ui.confirm(`Retirar ${route}${scope.section === "all" || scope.section === "skills" ? ": incluye skills compartidas usadas por otros runtimes" : ""}. Conserva runtimes, datos de Engram, credenciales, sesiones y herramientas compartidas. ¿Continuar?`)) continue;
+      let effective = scope;
+      if (action === "install" && (scope.section === "all" || scope.section === "skills")) {
+        const categories = operations.skillCategories();
+        const available = categories.map((option) => option.value);
+        const chosen = await ui.multiselect(`${route} › Categorías de skills`, categories, available);
+        if (chosen === "back") return;
+        if (!chosen.length) { ui.info("Sin categorías marcadas: no se proyectará ninguna skill. No se ha aplicado esta unidad."); continue; }
+        const resolved = resolveSkillCategories(chosen, available);
+        if (resolved.added.length) ui.info(`engineering requiere productivity: se añade ${resolved.added.join(", ")} aunque no estuviera marcada.`);
+        effective = { ...scope, skillCategories: resolved.categories };
+      }
       try {
-        const result = await operations.operate(action, scope, runtimes);
+        const result = await operations.operate(action, effective, runtimes);
         if (action === "doctor") ui.info(result ? "Comprobación con pendientes: revisa los avisos de arriba. Doctor solo lee; no se ha modificado nada." : "Comprobación sin pendientes. Doctor solo lee; no se ha modificado nada.");
         else ui.info(result ? "Aplicación parcial: consulta las unidades aplicadas y pendientes arriba. Reintento solo al elegir Aplicar; sin rollback global." : "Unidad completada. Configuración: nueva sesión / reload del runtime cuando corresponda.");
       } catch { ui.info(action === "doctor" ? "Comprobación incompleta: Doctor no pudo terminar. No se ha modificado nada." : "Unidad pendiente; pueden existir cambios parciales. Reintenta explícitamente; sin rollback global."); }
@@ -95,11 +112,16 @@ const ui: MenuUI = {
     const answer = await p.select({ message: `JorgeX Stack · ${route}`, options });
     return p.isCancel(answer) ? route === "Inicio" ? "exit" : "back" : answer;
   },
+  async multiselect(route, options, initial) {
+    const answer = await p.multiselect({ message: `JorgeX Stack · ${route}`, options, initialValues: initial, required: false });
+    return p.isCancel(answer) ? "back" : answer;
+  },
   async confirm(message) { const answer = await p.confirm({ message, initialValue: false }); return !p.isCancel(answer) && answer; },
   info: (message) => p.log.info(message),
 };
 const operations: MenuOperations = {
   detect: () => (Object.keys(ADAPTERS) as RuntimeId[]).filter((id) => ADAPTERS[id].detect().installed),
+  skillCategories: () => listSkillCategories(stackRoot()).map((value) => ({ value, label: value })),
   managed: () => Object.keys(readManifest().runtimes) as RuntimeId[],
   clean(unit, cleanupUi) {
     const dirs = residueDirs();

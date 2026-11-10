@@ -21,8 +21,8 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "jx-native-files-"));
   owned.clear();
   const stackDir = path.join(root, "stack");
-  fs.mkdirSync(path.join(stackDir, "skills", "one"), { recursive: true });
-  fs.writeFileSync(path.join(stackDir, "skills", "one", "SKILL.md"), "---\nname: one\ndescription: One skill\n---\nSkill body\n");
+  fs.mkdirSync(path.join(stackDir, "skills", "engineering", "one"), { recursive: true });
+  fs.writeFileSync(path.join(stackDir, "skills", "engineering", "one", "SKILL.md"), "---\nname: one\ndescription: One skill\n---\nSkill body\n");
   ctx = { stackDir, configDir: path.join(root, ".claude"), ownedFiles: owned, engramBin: null, warnings: [] };
 });
 afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
@@ -58,7 +58,7 @@ describe("native projection filesystem boundaries", () => {
   it("preserves foreign skill directories and identical links without claiming them", () => {
     const shared = path.join(root, ".agents", "skills", "one");
     fs.mkdirSync(shared, { recursive: true });
-    fs.writeFileSync(path.join(shared, "SKILL.md"), fs.readFileSync(path.join(ctx.stackDir, "skills", "one", "SKILL.md")));
+    fs.writeFileSync(path.join(shared, "SKILL.md"), fs.readFileSync(path.join(ctx.stackDir, "skills", "engineering", "one", "SKILL.md")));
     expect(owned.size).toBe(0);
     expect(planSkills(claudeCodeAdapter, ctx)).toEqual([]);
     fs.rmSync(shared, { recursive: true });

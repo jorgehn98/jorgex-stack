@@ -61,6 +61,11 @@ export interface InstallContext {
   ownedFiles?: ReadonlySet<string>;
   /** Filled while planning. Only an apply with an explicit per-file confirmation consumes it. */
   adoptable?: AdoptableFile[];
+  /**
+   * Categorías de skills que esta operación proyecta. undefined = todas las del
+   * origen; Actualizar y Doctor pasan solo las que Stack ya posee por archivo.
+   */
+  skillCategories?: ReadonlySet<string>;
   writingStyle?: WritingStyleSnapshot;
   /** Raíz de la fuente canónica (stack/). */
   stackDir: string;

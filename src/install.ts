@@ -13,7 +13,7 @@ import { isContainedIn, readTextIfExists, sameFileContent, writeText } from "./l
 import { removeNativeHooks } from "./lib/hooks-format.js";
 import { createBackup } from "./lib/backup.js";
 import { loadCanonicalMcp } from "./lib/canonical.js";
-import { planSkills } from "./components/skills.js";
+import { planSkills, ownedSkillCategories, unselectedSkillRoots } from "./components/skills.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { planOwnedProjection } from "./lib/owned-projection.js";
 import { readManifest, writeRuntimeManifest, type RuntimeManifest } from "./lib/manifest.js";
@@ -277,6 +277,12 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       ctx.engramBin = engram;
       const style = opts.writingStyle ?? ctx.writingStyle!;
       ctx.writingStyle = style;
+      if (scope.section !== "config") {
+        // Instalar proyecta lo marcado; Actualizar solo las categorías cuyas skills ya posee. Sin selección
+        // (API, pruebas) no se fija ninguna y se proyectan todas, como antes.
+        if (scope.skillCategories) ctx.skillCategories = new Set(scope.skillCategories);
+        else if (opts.command === "update") ctx.skillCategories = ownedSkillCategories(adapter, ctx);
+      }
       if (id === "opencode") assertOpenCodeV2Preflight(opts, detection.binPath);
       const old = readManifest(manifestPath).runtimes[id];
       const row: RuntimeManifest = { configDir, owned: [...old?.owned ?? []], mcpOwned: [...old?.mcpOwned ?? []], configOwned: [...old?.configOwned ?? []], packages: [...old?.packages ?? []], engram: old?.engram, updatedAt: old?.updatedAt ?? new Date().toISOString() };
@@ -430,6 +436,7 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         // not written, so its confirmation is recorded here.
         for (const target of ownedCandidates) if ((ctx.ownedFiles?.has(target) || adoptedTargets.has(target)) && !row.owned.includes(target)) row.owned.push(target);
         const manifest = readManifest(manifestPath);
+        const unselected = unselectedSkillRoots(adapter, ctx);
         const retired = planOrphanRetirement({
           owned: row.owned,
           planned: plan.map((action) => action.target),
@@ -439,6 +446,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           sharedRoots: [adapter.paths(configDir).skillsDir],
         });
         for (const orphan of retired) {
+          // Una categoría sin marcar no se toca ni se retira. El enlace de Claude es la raíz misma, no un hijo.
+          if (unselected.some((root) => samePath(orphan, root) || isContainedIn(orphan, root))) continue;
           if (!includesOwnedFile(adapter, ctx, scope, orphan) || path.basename(orphan) === "engram.ts") continue;
           assertProjectionPath(orphan, opts.targetDir ?? HOME);
           if (fs.lstatSync(orphan, { throwIfNoEntry: false })) { createBackup([orphan], `retired-${id}`, path.join(state, "backups")); fs.unlinkSync(orphan); }
