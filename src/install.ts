@@ -278,9 +278,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       const style = opts.writingStyle ?? ctx.writingStyle!;
       ctx.writingStyle = style;
       if (scope.section !== "config") {
-        // Instalar proyecta lo marcado; Actualizar solo las categorías cuyas skills ya posee; una llamada sin
-        // selección (API, pruebas) conserva el comportamiento anterior: todas.
-        ctx.skillCategories = scope.skillCategories ? new Set(scope.skillCategories) : opts.command === "update" ? ownedSkillCategories(adapter, ctx) : undefined;
+        // Instalar proyecta lo marcado; Actualizar solo las categorías cuyas skills ya posee. Sin selección
+        // (API, pruebas) no se fija ninguna y se proyectan todas, como antes.
+        if (scope.skillCategories) ctx.skillCategories = new Set(scope.skillCategories);
+        else if (opts.command === "update") ctx.skillCategories = ownedSkillCategories(adapter, ctx);
       }
       if (id === "opencode") assertOpenCodeV2Preflight(opts, detection.binPath);
       const old = readManifest(manifestPath).runtimes[id];
@@ -435,10 +436,9 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         // not written, so its confirmation is recorded here.
         for (const target of ownedCandidates) if ((ctx.ownedFiles?.has(target) || adoptedTargets.has(target)) && !row.owned.includes(target)) row.owned.push(target);
         const manifest = readManifest(manifestPath);
-        // Una categoría sin marcar no se toca ni se retira: sus archivos propios salen del cálculo de huérfanos.
         const unselected = unselectedSkillRoots(adapter, ctx);
         const retired = planOrphanRetirement({
-          owned: unselected.length ? row.owned.filter((file) => !unselected.some((root) => isContainedIn(file, root))) : row.owned,
+          owned: row.owned,
           planned: plan.map((action) => action.target),
           ownedByOthers: Object.entries(manifest.runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? []),
           // Skills come from one canon for every runtime: only the shared copy is protected
@@ -446,6 +446,8 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
           sharedRoots: [adapter.paths(configDir).skillsDir],
         });
         for (const orphan of retired) {
+          // Una categoría sin marcar no se toca ni se retira. El enlace de Claude es la raíz misma, no un hijo.
+          if (unselected.some((root) => samePath(orphan, root) || isContainedIn(orphan, root))) continue;
           if (!includesOwnedFile(adapter, ctx, scope, orphan) || path.basename(orphan) === "engram.ts") continue;
           assertProjectionPath(orphan, opts.targetDir ?? HOME);
           if (fs.lstatSync(orphan, { throwIfNoEntry: false })) { createBackup([orphan], `retired-${id}`, path.join(state, "backups")); fs.unlinkSync(orphan); }

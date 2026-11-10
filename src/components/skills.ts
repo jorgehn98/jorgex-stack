@@ -36,8 +36,6 @@ export function listSkills(stackDir: string): SkillEntry[] {
 /** Categorías pedidas más sus requisitos, en el orden del origen. `added` son las que el aviso debe mencionar. */
 export function resolveSkillCategories(selected: readonly string[], available: readonly string[]): { categories: string[]; added: string[] } {
   const known = new Set(available);
-  const unknown = selected.find((category) => !known.has(category));
-  if (unknown) throw new Error(`Categoría de skills desconocida: ${unknown}`);
   const wanted = new Set(selected);
   const added: string[] = [];
   for (const category of selected) for (const requirement of CATEGORY_REQUIREMENTS[category] ?? []) {

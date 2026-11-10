@@ -6,6 +6,7 @@ import { claudeCodeAdapter } from "../src/adapters/claude-code.js";
 import { listSkills, planSkills, resolveSkillCategories } from "../src/components/skills.js";
 import { runInstall } from "../src/install.js";
 import { readManifest } from "../src/lib/manifest.js";
+import { stackRoot } from "../src/lib/paths.js";
 import type { InstallContext } from "../src/adapters/types.js";
 
 let root: string;
@@ -55,7 +56,7 @@ describe("skill categories", () => {
     expect(resolveSkillCategories(["engineering"], available)).toEqual({ categories: ["engineering", "productivity"], added: ["productivity"] });
     expect(resolveSkillCategories(["productivity", "engineering"], available)).toEqual({ categories: ["engineering", "productivity"], added: [] });
     expect(resolveSkillCategories(["marketing"], available)).toEqual({ categories: ["marketing"], added: [] });
-    expect(() => resolveSkillCategories(["unknown"], available)).toThrow(/desconocida/);
+    expect(() => planSkills(claudeCodeAdapter, { ...context(writeStack({ marketing: ["gamma"] })), skillCategories: new Set(["unknown"]) })).toThrow(/desconocida/);
   });
 
   it("installs only the marked categories", async () => {
@@ -73,12 +74,27 @@ describe("skill categories", () => {
     expect(readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes.pi!.owned).toEqual(owned);
   });
 
-  it("updates only the categories whose skills Stack already owns", async () => {
+  it("updates owned categories from the origin and does not install an unowned one", async () => {
     expect(await install({ section: "skills", skillCategories: ["engineering"] })).toBe(0);
-    const owned = readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes.pi!.owned;
+    const target = sharedSkill("implementer");
+    const origin = fs.readFileSync(path.join(stackRoot(), "skills", "engineering", "implementer", "SKILL.md"), "utf8");
+    fs.writeFileSync(target, "modificado\n");
     expect(await install({ section: "skills" }, "update")).toBe(0);
-    expect(fs.existsSync(sharedSkill("implementer"))).toBe(true);
+    expect(fs.readFileSync(target, "utf8")).toBe(origin);
     expect(fs.existsSync(sharedSkill("to-spec"))).toBe(false);
-    expect(readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes.pi!.owned).toEqual(owned);
+  });
+
+  it("keeps the Claude Code link and ownership of an unmarked category", async () => {
+    const claude = (skillCategories: string[]) =>
+      runInstall({ runtimes: ["claude-code"], targetDir: root, dryRun: false, yes: true, scope: { section: "skills", skillCategories } });
+    const owned = () => readManifest(path.join(root, ".jorgex-stack", "manifest.json")).runtimes["claude-code"]!.owned;
+    const link = path.join(root, "claude-code", "skills", "landing-launch");
+    expect(await claude(["engineering", "marketing"])).toBe(0);
+    const before = owned();
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(await claude(["engineering"])).toBe(0);
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(sharedSkill("landing-launch"))).toBe(true);
+    expect(owned()).toEqual(before);
   });
 });

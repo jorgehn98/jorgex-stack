@@ -62,9 +62,11 @@ export async function runMenu(operations: MenuOperations, ui: MenuUI, tty: boole
       let effective = scope;
       if (action === "install" && (scope.section === "all" || scope.section === "skills")) {
         const categories = operations.skillCategories();
-        const chosen = await ui.multiselect(`${route} › Categorías de skills`, categories, categories.map((option) => option.value));
+        const available = categories.map((option) => option.value);
+        const chosen = await ui.multiselect(`${route} › Categorías de skills`, categories, available);
         if (chosen === "back") return;
-        const resolved = resolveSkillCategories(chosen, categories.map((option) => option.value));
+        if (!chosen.length) { ui.info("Sin categorías marcadas: no se proyectará ninguna skill. No se ha aplicado esta unidad."); continue; }
+        const resolved = resolveSkillCategories(chosen, available);
         if (resolved.added.length) ui.info(`engineering requiere productivity: se añade ${resolved.added.join(", ")} aunque no estuviera marcada.`);
         effective = { ...scope, skillCategories: resolved.categories };
       }
