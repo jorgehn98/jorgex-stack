@@ -17,7 +17,7 @@
 - Do not add dependencies without approval or silently expand the agreed scope.
 - Use `lean-code` before significant code decisions and `diagnose` for failures.
 - Use `orchestrator` when work needs planning or coordination; it owns the workflow. Small understood changes can stay direct.
-- Load skills only when useful; reuse instructions already in context. Keep Visual Director, `retro`, `what` and `close` explicitly invoked.
+- Load skills only when useful; reuse instructions already in context. Keep Software Factory, Visual Director, `retro`, `what` and `close` explicitly invoked.
 - Do not turn available skills or subagents into a mandatory sequence.
 - When delegating, ask the subagent to write its final report in the user's language, and reply to the user in that language even when a report arrives in another.
 - Use native runtime capabilities and provider integrations; do not duplicate them with private hooks or protocols.

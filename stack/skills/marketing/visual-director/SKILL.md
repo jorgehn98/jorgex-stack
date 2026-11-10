@@ -17,7 +17,7 @@ This is one root skill, not a family per tool. It shares brief, direction, visua
 
 ## When this skill applies
 
-Load it only when the user explicitly invokes `visual-director` or "Visual Director". It is manual by design: do not auto-load it for ordinary styling, buttons, forms, routine layout or bug fixes. If invoked for a routine edit, keep that edit in the normal project workflow instead of manufacturing a brief or redesign.
+Load it only when the user explicitly invokes `visual-director` or "Visual Director", or invokes `software-factory` for a project with an interface (that invocation counts as explicit). It is manual by design: do not auto-load it for ordinary styling, buttons, forms, routine layout or bug fixes. If invoked for a routine edit, keep that edit in the normal project workflow instead of manufacturing a brief or redesign.
 
 ## Read only the relevant references
 
