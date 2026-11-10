@@ -67,8 +67,7 @@ Roles are skills, not agents. Load one yourself when you are going to do the wor
 ## Review and deliver
 
 - Consolidate documentation once behavior is stable, and only for a concrete reader or need.
-- Use `xreview` on a coherent candidate while the PR is still draft. Early review is the exception: one specialist, for a concrete risk checks do not cover.
-- Validate findings against real premises. Fix blockers, not every optional suggestion; recheck affected behavior instead of restarting the panel.
+- Use `xreview` on a coherent candidate while the PR is still draft; how the review runs and how findings are consolidated lives only there. Early review is the exception: one specialist, for a concrete risk checks do not cover.
 - Follow the project's Git rules for worktrees, commits, draft and Ready. Ready means implementation, necessary review and fixes are finished.
 - Check the actual candidate and its required CI before integration. Never merge without explicit user authorization. After that order you may enable auto-merge on that PR and stop watching its checks, since required checks still gate the merge; never enable it without the order. Confirm the PR reports auto-merge as enabled and retry once if it does not.
 - Delivery report: PR, candidate and checks; two to four bullets of what changed; verification run, with the flows walked and not walked; pending items and real friction observed.
