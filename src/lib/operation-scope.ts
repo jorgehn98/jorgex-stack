@@ -3,6 +3,11 @@ import { isContainedIn } from "./fsx.js";
 
 export interface OperationScope {
   section: "all" | "skills" | "config";
+  /**
+   * Categorías elegidas en Instalar. Ausente = todas; Actualizar deriva las que
+   * Stack ya posee por archivo y Desinstalar sigue retirando todas.
+   */
+  skillCategories?: readonly string[];
 }
 export function includesOwnedFile(adapter: Adapter, ctx: InstallContext, scope: OperationScope, file: string): boolean {
   const paths = adapter.paths(ctx.configDir);

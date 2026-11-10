@@ -2,14 +2,22 @@ import { expect, it, vi } from "vitest";
 import { runMenu, type MenuOperations } from "../src/cli.js";
 
 function harness(answers: string[], fail = false) {
-  const operate = vi.fn(async () => fail ? 1 : 0);
+  const operate = vi.fn(async (_action: string, _scope: { section: string; skillCategories?: readonly string[] }) => fail ? 1 : 0);
   const clean = vi.fn(async (_unit: string, _ui: unknown) => { if (fail) throw new Error("unreadable"); return 0; });
   const messages: string[] = [];
-  const operations: MenuOperations = { detect: () => ["pi"], operate, clean };
+  const categories = ["agent-tooling", "engineering", "marketing", "productivity"].map((value) => ({ value, label: value }));
+  const operations: MenuOperations = { detect: () => ["pi"], skillCategories: () => categories, operate, clean };
   const ui = { select: async (_path: string, options: { value: string; label: string }[]) => {
     const value = answers.shift()!;
     expect(options.some((option) => option.value === value)).toBe(true);
     return value;
+  }, multiselect: async (_path: string, options: { value: string; label: string }[], _initial: string[]) => {
+    const value = answers.shift()!;
+    if (value === "back") return "back" as const;
+    return value.split(",").map((entry) => {
+      expect(options.some((option) => option.value === entry)).toBe(true);
+      return entry;
+    });
   }, confirm: vi.fn(async () => true), info: (message: string) => { messages.push(message); } };
   return { operations, ui, operate, clean, messages };
 }
@@ -25,8 +33,21 @@ it("visits a scoped unit and returns without applying it", async () => {
   expect(h.operate).not.toHaveBeenCalled();
   expect(h.ui.confirm).not.toHaveBeenCalled();
 });
-it("canceling destructive scope confirmation has no operation effects", async () => {
-  const h = harness(["uninstall", "config", "pi", "apply", "back", "back", "back", "exit"]);
+it("asks for skill categories on install and drags productivity with engineering", async () => {
+  const h = harness(["install", "skills", "apply", "engineering", "back", "back", "exit"]);
+  await runMenu(h.operations, h.ui, true);
+  expect(h.operate).toHaveBeenCalledExactlyOnceWith("install", { section: "skills", skillCategories: ["engineering", "productivity"] }, ["pi"]);
+  expect(h.messages.join(" ")).toContain("engineering requiere productivity");
+});
+it("does not ask for categories to update, check or remove", async () => {
+  const h = harness(["update", "skills", "apply", "back", "back", "doctor", "skills", "apply", "back", "back", "uninstall", "skills", "apply", "back", "back", "exit"]);
+  const multiselect = vi.spyOn(h.ui, "multiselect");
+  await runMenu(h.operations, h.ui, true);
+  expect(multiselect).not.toHaveBeenCalled();
+  expect(h.operate.mock.calls.map(([action]) => action)).toEqual(["update", "doctor", "uninstall"]);
+  expect(h.operate.mock.calls.every(([action, scope]) => action === "install" || !("skillCategories" in scope))).toBe(true);
+});
+it("canceling destructive scope confirmation has no operation effects", async () => {  const h = harness(["uninstall", "config", "pi", "apply", "back", "back", "back", "exit"]);
   h.ui.confirm.mockResolvedValue(false);
   await runMenu(h.operations, h.ui, true);
   expect(h.operate).not.toHaveBeenCalled();

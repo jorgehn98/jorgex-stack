@@ -6,7 +6,7 @@ status: borrador — no publicado
 
 # Visual Director
 
-Skill de dirección visual manual. La fuente editable vive en `stack/skills/visual-director/` de JorgeX Stack; las copias instaladas no son otra fuente de mantenimiento. El dossier está en `docs/research/visual-director/`, relativo a la raíz del repo, y **no es una dependencia de runtime**: esta carpeta es autosuficiente y portable.
+Skill de dirección visual manual. La fuente editable vive en `stack/skills/marketing/visual-director/` de JorgeX Stack; las copias instaladas no son otra fuente de mantenimiento. El dossier está en `docs/research/visual-director/`, relativo a la raíz del repo, y **no es una dependencia de runtime**: esta carpeta es autosuficiente y portable.
 
 ## Estado y alcance
 

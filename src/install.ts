@@ -13,7 +13,7 @@ import { isContainedIn, readTextIfExists, sameFileContent, writeText } from "./l
 import { removeNativeHooks } from "./lib/hooks-format.js";
 import { createBackup } from "./lib/backup.js";
 import { loadCanonicalMcp } from "./lib/canonical.js";
-import { planSkills } from "./components/skills.js";
+import { planSkills, ownedSkillCategories, unselectedSkillRoots } from "./components/skills.js";
 import { planSystemPrompt } from "./components/system-prompt.js";
 import { planOwnedProjection } from "./lib/owned-projection.js";
 import { readManifest, writeRuntimeManifest, type RuntimeManifest } from "./lib/manifest.js";
@@ -277,6 +277,11 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
       ctx.engramBin = engram;
       const style = opts.writingStyle ?? ctx.writingStyle!;
       ctx.writingStyle = style;
+      if (scope.section !== "config") {
+        // Instalar proyecta lo marcado; Actualizar solo las categorías cuyas skills ya posee; una llamada sin
+        // selección (API, pruebas) conserva el comportamiento anterior: todas.
+        ctx.skillCategories = scope.skillCategories ? new Set(scope.skillCategories) : opts.command === "update" ? ownedSkillCategories(adapter, ctx) : undefined;
+      }
       if (id === "opencode") assertOpenCodeV2Preflight(opts, detection.binPath);
       const old = readManifest(manifestPath).runtimes[id];
       const row: RuntimeManifest = { configDir, owned: [...old?.owned ?? []], mcpOwned: [...old?.mcpOwned ?? []], configOwned: [...old?.configOwned ?? []], packages: [...old?.packages ?? []], engram: old?.engram, updatedAt: old?.updatedAt ?? new Date().toISOString() };
@@ -430,8 +435,10 @@ export async function runInstall(opts: InstallOptions): Promise<number> {
         // not written, so its confirmation is recorded here.
         for (const target of ownedCandidates) if ((ctx.ownedFiles?.has(target) || adoptedTargets.has(target)) && !row.owned.includes(target)) row.owned.push(target);
         const manifest = readManifest(manifestPath);
+        // Una categoría sin marcar no se toca ni se retira: sus archivos propios salen del cálculo de huérfanos.
+        const unselected = unselectedSkillRoots(adapter, ctx);
         const retired = planOrphanRetirement({
-          owned: row.owned,
+          owned: unselected.length ? row.owned.filter((file) => !unselected.some((root) => isContainedIn(file, root))) : row.owned,
           planned: plan.map((action) => action.target),
           ownedByOthers: Object.entries(manifest.runtimes).filter(([runtime]) => runtime !== id).flatMap(([, entry]) => entry?.owned ?? []),
           // Skills come from one canon for every runtime: only the shared copy is protected

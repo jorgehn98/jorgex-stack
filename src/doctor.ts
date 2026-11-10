@@ -3,6 +3,7 @@ import path from "node:path";
 import * as p from "@clack/prompts";
 import type { RuntimeId } from "./adapters/types.js";
 import { ADAPTERS, assertOpenCodeV2Preflight, buildScopedPlan, configDirectory, diffPlan, makeContext, stateDirectory } from "./install.js";
+import { ownedSkillCategories } from "./components/skills.js";
 import { detectEngram, engramVersion, lookPath } from "./lib/detect.js";
 import { officialSetupVerifiers } from "./lib/official-engram-setup.js";
 import { readManifest } from "./lib/manifest.js";
@@ -54,6 +55,7 @@ export async function runDoctor(opts: DoctorOptions = {}): Promise<number> {
       if (id === "opencode") assertOpenCodeV2Preflight(opts, detection.binPath);
       const configDir = configDirectory(id, opts.targetDir);
       const ctx = makeContext(adapter, configDir, opts.targetDir);
+      if (scope.section !== "config") ctx.skillCategories = ownedSkillCategories(adapter, ctx);
       if (configSelected && ctx.writingStyle.originalContent !== ctx.writingStyle.installedContent) throw new Error("Fuente de estilo ausente o desactualizada; aplica configuración deliberadamente.");
       if (configSelected && id === "pi") {
         const policyFile = path.join(configDir, "extensions", "pi-permission-system", "config.json");
