@@ -195,6 +195,8 @@ Reference documents are written in Spanish.
 - [Writing style](docs/references/writing-style.md)
 - [Testing](docs/references/testing.md)
 - [skills.sh compatibility](docs/references/skills-sh.md)
+- [Skill categories](docs/references/skill-categories.md)
+- [Software Factory](docs/references/software-factory.md)
 - [Workflow entry point](docs/references/sdd-workflow.md)
 - [Historical research](docs/research/README.md)
 
