@@ -29,7 +29,7 @@ Turn an agreed objective into `work/{name}/` with a PRD, a plan and task specifi
 - Criteria are verifiable and specific: "the type includes X", not "the type is correct".
 - In a task, separate verified facts from assumptions, cite the source of what you copy and include only what is pertinent.
 - Testing decision per behavior change: risk, existing protection, new behavior to protect, chosen seam and action (add, update, reuse or no new test) with its reason.
-- A task with user-facing behavior lists under Verification the flows to walk in the browser.
+- A task with user-facing behavior lists under Verification and escalation the flows to walk in the browser.
 - Do not invent legacy states, require one approval per test seam or add fixtures to fill a template.
 - Prefer the smallest native or existing solution. State what disappears as well as what is added.
 - Separate Git dependencies from external prerequisites; do not assume an unpublished artifact exists.
@@ -38,7 +38,7 @@ Turn an agreed objective into `work/{name}/` with a PRD, a plan and task specifi
 ## Check before presenting
 
 - Every requested outcome maps to a criterion, and every criterion to at least one task.
-- Every task has an owner, scope, files, dependencies and a complete testing decision when it changes behavior.
+- Every task has an owner, scope, files, dependencies and a complete testing decision when it changes behavior, and its browser flows when it has user-facing behavior.
 - PR bases and merge order are compatible with task dependencies.
 - References resolve, and PRD, plan and tasks do not contradict each other.
 - No blank section was filled with a fabricated requirement.
