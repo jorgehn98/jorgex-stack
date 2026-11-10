@@ -80,7 +80,7 @@ Use only the sections that apply; do not leave empty headings. Parts marked **co
 ## Verification and escalation
 [What demonstrates completion, and the concrete conditions that require asking.]
 
-## Testing decision
+## Testing decision (code only)
 - **Risk:** [regression this task can introduce]
 - **Existing protection:** [specific test or evidence, or none]
 - **New behavior:** [what needs protection, or none]
