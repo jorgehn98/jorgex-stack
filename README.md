@@ -46,6 +46,17 @@ Pick a target and a unit, then **Aplicar**. Navigating or going back never runs 
 
 Missing runtimes are not installed when you open a screen. Updating configuration uses native channels (`claude update`, `codex update`, `opencode upgrade`, `pi update --all` and the official package registry); updating only skills does not update tools. Doctor compares local configuration without installing, downloading, starting a browser or writing memories. It does not certify that a runtime actually loads the resources, has access to a model, or enforces permissions.
 
+### Install individual skills
+
+[skills.sh](https://skills.sh) can install these skills as plain folders, without the menu:
+
+```sh
+npx skills add jorgehn98/jorgex-stack
+npx skills add jorgehn98/jorgex-stack --skill implementer
+```
+
+`engineering` requires `productivity`, because the orchestrator uses `to-spec`, `grilling` and `second-opinion`; install both categories together. This route brings only the skill folders: no system prompt, Engram setup, hooks, MCP configuration or runtime files, and some skills rely on that context. It is a partial install, not a replacement for Stack. Do not mix both channels over the same skills: the CLI overwrites an existing copy without warning (and replaces Claude Code's link with a copied directory), after which Stack's Update cannot refresh that skill. See [skills.sh compatibility](docs/references/skills-sh.md).
+
 ## Shared canon
 
 **Skills:** twenty-one local skills, grouped by category in `stack/skills/<category>/` and copied flat to `~/.agents/skills`: **engineering** (orchestrator, implementer, analyst, reviewer, security-auditor, simplifier, xreview, diagnose, lean-code, project-architect), **productivity** (grilling, second-opinion, close, retro, what, to-spec), **marketing** (visual-director, landing-launch, organic-growth) and **agent-tooling** (skill-creator, mcp-builder). They are copied whole, with no updater for external repositories and no skill pins. Pi, Codex and OpenCode discover them natively; Claude uses one link per skill from its native path, not another copy. `engineering` requires `productivity`, because the orchestrator uses `to-spec`, `grilling` and `second-opinion`.
@@ -183,6 +194,7 @@ Reference documents are written in Spanish.
 - [Claude limits](docs/references/claude-code-limits.md)
 - [Writing style](docs/references/writing-style.md)
 - [Testing](docs/references/testing.md)
+- [skills.sh compatibility](docs/references/skills-sh.md)
 - [Workflow entry point](docs/references/sdd-workflow.md)
 - [Historical research](docs/research/README.md)
 

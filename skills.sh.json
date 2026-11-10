@@ -1,0 +1,38 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "paths": ["./stack/skills"],
+  "notGrouped": "bottom",
+  "groupings": [
+    {
+      "title": "Engineering",
+      "description": "Workflow, review, diagnosis and lean-code skills for implementing changes.",
+      "skills": [
+        "orchestrator",
+        "implementer",
+        "analyst",
+        "reviewer",
+        "security-auditor",
+        "simplifier",
+        "xreview",
+        "diagnose",
+        "lean-code",
+        "project-architect"
+      ]
+    },
+    {
+      "title": "Productivity",
+      "description": "Focused thinking and session skills: spec, clarify, review and close.",
+      "skills": ["grilling", "second-opinion", "close", "retro", "what", "to-spec"]
+    },
+    {
+      "title": "Marketing",
+      "description": "Landing pages, organic growth and visual direction.",
+      "skills": ["visual-director", "landing-launch", "organic-growth"]
+    },
+    {
+      "title": "Agent tooling",
+      "description": "Build and improve skills and MCP servers.",
+      "skills": ["skill-creator", "mcp-builder"]
+    }
+  ]
+}
