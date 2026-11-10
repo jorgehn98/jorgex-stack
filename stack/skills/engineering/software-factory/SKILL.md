@@ -1,6 +1,7 @@
 ---
 name: software-factory
-description: "Carry one objective from an idea or an issue to a draft pull request: product grilling, technical decisions, an independent second opinion, a spec, autonomous execution and double verification, with two human gates in a new project. Use only when the user explicitly invokes software-factory or Software Factory; do not load it automatically. It coordinates the existing skills, which keep their own procedures."
+description: "Take a new project from idea to a draft PR with two human gates, or a GitHub issue or small task from the issue to a draft PR with an autonomy check. Use only when the user explicitly invokes software-factory or Software Factory; do not load it automatically."
+compatibility: "For coding agents with project and Git access. Needs a browser available and authorized in the runtime for the verification walk, and the GitHub CLI for issues and pull requests. Manual invocation only: Stack marks it with opencode/autoinvoke: false where the runtime supports it, and the description states it everywhere else."
 metadata:
   version: "1.0.0-draft"
   opencode/autoinvoke: false
@@ -31,9 +32,7 @@ This skill is the entry point and the two gates. The workflow, roles and verific
    - Keep the orchestrator's three attempts per flow, then report the blocker.
    - Run local tests and let the agent start the dev server in the background and stop it at the end, unless the project's `AGENTS.md` names another environment.
    - **No browser.** If none is available and authorized, or the environment is not usable, say so and stop before the autonomous part. Never deliver as verified something that was never opened.
-8. **Delivery.** The orchestrator's report, with every acceptance scenario marked passed, not walked or blocked, plus the draft PR. Merge only by the user's explicit order.
-
-New project, in order: private repository, minimal commit on `main` (a PR needs a base branch), MVP on its own branch, draft PR until the merge order.
+8. **Delivery.** (A PR needs a base branch, hence the minimal commit on `main`; the MVP lives on its own branch.) The orchestrator's report, with every acceptance scenario marked passed, not walked or blocked, plus the draft PR. Merge only by the user's explicit order.
 
 ## 3. Issue or small task
 
@@ -42,7 +41,7 @@ New project, in order: private repository, minimal commit on `main` (a PR needs 
 - Execution and delivery keep the verification and delivery bars of section 2.
 - The invocation grants the browser walk (own tabs, no sessions or personal data) and no other external effect. The final gate is the same: draft PR, merge only by explicit order.
 - **Autonomy criterion.** Decide by what the change will touch, not by what the issue says. Stop and ask after the PRD when it touches a protected zone or a product decision is ambiguous; never assume. In doubt, a human.
-- Check the protected zones twice: against what the PRD plans to touch, before implementing, and against the files of the diff, before opening the PR. A hit in the diff means the PR is not opened; report it instead.
+- Check the protected zones twice: against what the PRD plans to touch, before implementing, and against the files of the diff, before opening the PR. A hit in the diff means the branch stays unpushed and no PR is opened: report the zone, the files and the branch.
 
 ### Protected zones
 
@@ -56,9 +55,3 @@ New project, in order: private repository, minimal commit on `main` (a PR needs 
 - CI and deployment.
 
 The project's `AGENTS.md` may add zones; it never removes one.
-
-## 4. Limits
-
-- No automatic trigger, queue or headless mode: the user starts it.
-- No merge, deployment or public repository without an explicit order.
-- Do not extend an issue beyond its PRD. Fix what the change broke; report the rest.
